@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd "$(dirname "$0")"
+case "${1:-}" in
+  backup) mkdir -p backups; docker compose exec -T core sh -lc 'sqlite3 /app/data/pansaos.sqlite ".backup /tmp/pansaos.sqlite"' && docker cp "$(docker compose ps -q core):/tmp/pansaos.sqlite" "backups/pansaos-$(date -u +%Y%m%d-%H%M%S).sqlite";;
+  restore) test -n "${2:-}" && test -f "$2" || { echo 'Usage: ./pansaos restore backups/file.sqlite'; exit 1; }; sqlite3 "$2" 'PRAGMA integrity_check;' | grep -qx ok; ./pansaos backup; docker compose stop core; rm -f data/pansaos.sqlite-wal data/pansaos.sqlite-shm; cp "$2" data/pansaos.sqlite; docker compose start core;;
+  logs) docker compose logs -f --tail=200 core;;
+  *) echo 'Usage: ./pansaos backup | restore FILE | logs'; exit 1;;
+esac

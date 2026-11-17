@@ -1,0 +1,49 @@
+# dependencies
+node_modules/
+
+# builds
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+backups/
+
+# runtime data
+data/*
+!data/.gitkeep
+workspace/*
+!workspace/.gitkeep
+plugins/*
+!plugins/.gitkeep
+logs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# test & coverage
+coverage/
+.nyc_output/
+.vitest/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# misc
+*.log
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
