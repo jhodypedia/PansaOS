@@ -45,7 +45,9 @@ export async function safePath(root: string, input: string): Promise<string> {
   const base = await fs.realpath(root),
     resolved = path.resolve(base, input);
   if (resolved !== base && !resolved.startsWith(base + path.sep))
-    throw new Error("Path di luar workspace ditolak");
+    throw new Error(
+      `Path di luar workspace ditolak (workspace session ini: ${path.basename(base)}; pakai path relatif, contoh: connect-body.json)`,
+    );
   let cursor = resolved;
   while (true) {
     try {

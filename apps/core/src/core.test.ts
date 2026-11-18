@@ -241,3 +241,59 @@ describe("agent stop", () => {
     db.db.close();
   });
 });
+
+describe("failure reporting", () => {
+  it("does not duplicate the error event a failed task already recorded", async () => {
+    Object.assign(process.env, {
+      MASTER_KEY: key,
+      DASH_TOKEN: "test-dash-token-0123456789abcdef",
+      DATA_DIR: "/tmp/pansa-fail-test",
+      WORKSPACE_DIR: "/tmp/pansa-fail-test",
+    });
+    const { Agent } = await import("./agent.js");
+    const db = new Store(":memory:");
+    const providers = new Providers(db, key);
+    const tools = {
+      pending: new Map<string, (ok: boolean) => void>(),
+      sandbox: { kill: async () => 0 },
+    } as unknown as ConstructorParameters<typeof Agent>[2];
+    const agent = new Agent(db, providers, tools);
+    const session = String(db.session("fail test").id);
+
+    const errors = () =>
+      Number(db.get("SELECT COUNT(*) n FROM events WHERE type='error'")?.n);
+
+    db.event("task", session, { status: "running", prompt: "x" });
+    db.event("task", session, { status: "error", error: "Batas langkah" });
+    agent.fail(session, new Error("Batas langkah"));
+    expect(errors()).toBe(0);
+
+    const other = String(db.session("fail test 2").id);
+    agent.fail(other, new Error("Provider mati"));
+    expect(errors()).toBe(1);
+    const only = db.get("SELECT data FROM events WHERE type='error'");
+    expect(JSON.parse(String(only?.data)).error).toBe("Provider mati");
+    db.db.close();
+  });
+});
+
+describe("makefun keypair", () => {
+  it("derives the same base58 address from the stored secret and signs verifiably", async () => {
+    const { createKeypair, addressOf, signWith } = await import("./makefun.js");
+    const { createPublicKey, verify } = await import("node:crypto");
+    const pair = createKeypair();
+    expect(pair.address).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+    expect(addressOf(pair)).toBe(pair.address);
+    const message = "PansaOS connect test";
+    const signature = signWith(pair, message);
+    expect(signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
+    expect(addressOf({ ...pair, address: "" })).toBe(pair.address);
+    const pub = createPublicKey({
+      key: Buffer.from(pair.secret, "base64"),
+      format: "der",
+      type: "pkcs8",
+    });
+    expect(pub.asymmetricKeyType).toBe("ed25519");
+    expect(typeof verify).toBe("function");
+  });
+});

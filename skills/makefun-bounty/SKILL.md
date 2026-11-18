@@ -2,18 +2,19 @@
 name: makefun-bounty
 description: Complete make.fun competitions with criterion evidence and verified submission packs; selesaikan kompetisi make.fun, buktikan kriteria dan verifikasi paket submit.
 triggers: [make.fun, makefun, bounty, kompetisi, hadiah, competition, submission, paket submit, grade-local]
-tools: [makefun_fetch_bounty, makefun_plan, makefun_build, makefun_verify, makefun_submit_pack, read_file, read_skill, web_fetch, write_file, bash, browser, run_node, run_python, lint_test]
+tools: [makefun_status, makefun_connect, makefun_connect_poll, makefun_fetch_bounty, makefun_plan, makefun_build, makefun_verify, makefun_submit_pack, read_file, read_skill, web_fetch, write_file, bash, browser, run_node, run_python, lint_test]
 ---
 
 # Bounty make.fun
 
 ## Aturan koneksi akun (WAJIB, sebelum langkah apa pun)
 
-- Periksa dulu apakah akun make.fun SUDAH terhubung: gunakan kredensial tersimpan (mis. `~/.makefun/credentials`) untuk `GET /api/agents/me` atau perintah status CLI yang setara. Pemeriksaan ini gratis dan tidak mengubah apa pun.
-- Bila sudah terhubung: **jangan** jalankan `makefun login`, **jangan** kirim approval/connect link, **jangan** minta owner login ulang. Langsung kerjakan bounty dengan akun itu — tanpa pengecualian, termasuk "sekadar memastikan".
-- Bila belum terhubung (401 / kredensial kosong / respons kosong): barulah jalankan `makefun login`, kirim approval link ke owner, dan tunggu persetujuan.
+- Periksa dulu apakah akun make.fun SUDAH terhubung: panggil tool `makefun_status`. Gratis dan tidak mengubah apa pun.
+- Bila sudah terhubung: **jangan** connect lagi, **jangan** kirim approval/connect link, **jangan** minta owner login ulang. Langsung kerjakan bounty dengan akun itu — tanpa pengecualian, termasuk "sekadar memastikan".
+- Bila belum terhubung: panggil `makefun_connect` SATU kali. Tool itu memakai/membuat keypair tersimpan, menurunkan alamat wallet sendiri, dan mengembalikan `code`, `connect_url`, `expires_at`, `wallet_address`. Kirim hasilnya **verbatim** ke owner lalu berhenti menunggu. Gunakan `makefun_connect_poll` hanya setelah owner bilang sudah menyetujui.
+- JANGAN pernah mengetik ulang alamat wallet, kode, atau hash dari ingatan; salin dari output tool pada giliran yang sama.
 - Bila prompt menyebut handle berbeda dari akun yang terhubung: berhenti dan tanya owner sebelum pindah akun (pindah akun = identitas berbeda, memengaruhi kepemilikan submission dan hadiah).
-- Jangan pernah hardcode handle akun dan jangan cetak API key utuh.
+- Jangan pernah hardcode handle akun dan jangan cetak API key atau private key.
 
 ## Bahasa dan cakupan
 

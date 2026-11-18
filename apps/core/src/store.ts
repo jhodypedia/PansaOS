@@ -9,6 +9,7 @@ export type Row = Record<string, unknown>;
 export type EventType =
   | "message"
   | "token"
+  | "progress"
   | "tool"
   | "switch"
   | "error"

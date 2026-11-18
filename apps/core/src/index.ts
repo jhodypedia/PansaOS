@@ -22,6 +22,7 @@ import { routes } from "./routes.js";
 import { tolerantJsonBody } from "./body.js";
 import chokidar from "chokidar";
 import { z } from "zod";
+import { MCP, ServerSchema } from "./mcp.js";
 
 await mkdir(config.data, { recursive: true });
 await mkdir(config.workspace, { recursive: true });
@@ -271,6 +272,27 @@ app.post("/api/sessions", async (req) => {
   const body = req.body as { title?: string };
   return store.session(body?.title ?? "Dashboard session");
 });
+app.get("/api/commands", async () => (await agent.commands.list()).map(({ name, description }) => ({ name, description })));
+const mcp = new MCP(tools);
+app.get("/api/mcp", async () => mcp.list());
+app.post("/api/mcp", async req => { await mcp.save(ServerSchema.parse(req.body)); return mcp.list(); });
+app.delete("/api/mcp/:name", async req => { await mcp.remove((req.params as { name: string }).name); return { ok: true }; });
+for (const server of mcp.configs()) void mcp.connect(server);
+app.get("/api/sessions/:id/state", async req => {
+  const id = (req.params as { id: string }).id;
+  if (!store.get("SELECT id FROM sessions WHERE id=?", id)) throw Object.assign(new Error("Session tidak ditemukan"), { statusCode: 404 });
+  return { mode: tools.state.mode(id), todos: tools.state.todos(id), usage: agent.sessionUsage(id), checkpoints: await tools.checkpoints.list(id), visible_after: tools.state.get(id, "visible_after", 0), subagents: [...tools.backgroundTasks.values()].filter(t => t.session === id), questions: [...tools.questions].filter(([, q]) => q.session === id).map(([key, q]) => ({ id: key, question: q.question, options: q.options })) };
+});
+app.post("/api/sessions/:id/mode", async req => {
+  const id = (req.params as { id: string }).id;
+  const { mode } = z.object({ mode: z.enum(["plan", "build", "ask"]) }).parse(req.body);
+  tools.state.set(id, "mode", mode);
+  return { mode };
+});
+app.post("/api/questions/:id", async req => {
+  tools.answer((req.params as { id: string }).id, z.object({ answer: z.string().min(1).max(4000) }).parse(req.body).answer);
+  return { ok: true };
+});
 app.post("/api/sessions/:id/message", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const body = z
@@ -281,11 +303,7 @@ app.post("/api/sessions/:id/message", async (req, reply) => {
   if (agent.running.has(id))
     return reply.code(409).send({ error: "Task masih berjalan" });
   if (!body?.prompt) return reply.code(400).send({ error: "Prompt wajib" });
-  void agent.run(id, body.prompt).catch((e) =>
-    store.event("error", id, {
-      error: e instanceof Error ? e.message : String(e),
-    }),
-  );
+  void agent.run(id, body.prompt).catch((e) => agent.fail(id, e));
   return { accepted: true };
 });
 app.delete("/api/sessions/:id", async (req, reply) => {
@@ -403,6 +421,18 @@ wss.on("connection", (ws) => {
   ws.on("close", () => clients.delete(ws));
 });
 await tools.plugins().catch((e) => app.log.warn(e, "plugin load failed"));
+app.log.info(
+  {
+    network: config.SANDBOX_NETWORK === "true" ? "bridge" : "none",
+    memory: "2g",
+    cpus: 2,
+    pids: 512,
+    tmp: "1g",
+    workspace: "read-write",
+    unsandboxed: config.ALLOW_UNSANDBOXED === "true",
+  },
+  "sandbox capabilities",
+);
 app.log.info({ port: config.PORT }, "PansaOS core ready");
 chokidar
   .watch(config.plugins, { ignoreInitial: true })

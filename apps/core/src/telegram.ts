@@ -64,6 +64,12 @@ export async function startTelegram(d: Deps) {
     return { ok: true };
   };
   d.store.bus.on("event", (e: LiveEvent) => {
+    if (e.type === "progress" && e.data.kind === "question") {
+      const keyboard = new InlineKeyboard();
+      for (const [index, option] of (e.data.options as { label: string }[]).entries()) keyboard.text(option.label, `answer:${e.data.id}:${index}`).row();
+      for (const id of config.admins) void bot.api.sendMessage(id, `${e.data.question}\n${e.data.default ? `Default setelah 5 menit: ${e.data.default}` : "Tanpa jawaban dalam 5 menit: task berhenti."}`, { reply_markup: keyboard }).catch(() => {});
+    }
+    if (e.type === "progress" && (e.data.kind === "todo" || (e.data.kind === "subagent" && e.data.status !== "running"))) void d.tools.send(String(e.data.text).slice(0, 1000)).catch(() => {});
     if (e.type === "approval") {
       const keyboard = new InlineKeyboard()
         .text("✅ Setuju", `approve:${e.data.id}:yes`)
@@ -91,7 +97,19 @@ export async function startTelegram(d: Deps) {
       ctx.chat?.id ?? null,
     );
   bot.command("start", (ctx) => ctx.reply(`PansaOS aktif.\n\n${help}`));
-  bot.command("help", (ctx) => ctx.reply(help));
+  bot.command("help", async ctx => ctx.reply((await d.agent.commands.execute(String((await session(ctx)).id), "/help"))?.response ?? help));
+  for (const name of ["mode", "permissions", "plan", "clear", "compact", "init", "review", "model", "cost", "doctor"])
+    bot.command(name, async ctx => {
+      const s = await session(ctx);
+      if (d.agent.running.has(String(s.id))) return ctx.reply("Task masih berjalan. Gunakan /stop terlebih dahulu.");
+      void d.agent.run(String(s.id), `/${name} ${ctx.match}`.trim()).then(result => ctx.reply(result.slice(0, 3900))).catch(e => ctx.reply(String(e.message).slice(0, 3900)));
+    });
+  bot.callbackQuery(/^answer:/, async ctx => {
+    const [, id, index] = ctx.callbackQuery.data.split(":");
+    const pending = d.tools.questions.get(id!);
+    try { d.tools.answer(id!, pending?.options[Number(index)] ?? ""); await ctx.answerCallbackQuery("Jawaban tersimpan"); await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); }
+    catch { await ctx.answerCallbackQuery("Pertanyaan kedaluwarsa"); }
+  });
   bot.command("new", async (ctx) => {
     const old = await session(ctx);
     d.agent.stop(String(old.id));
@@ -436,11 +454,14 @@ export async function startTelegram(d: Deps) {
       );
     }
     const s = await session(ctx);
+    const pendingQuestion = [...d.tools.questions].find(([, q]) => q.session === String(s.id));
+    if (pendingQuestion) { d.tools.answer(pendingQuestion[0], ctx.message.text); return ctx.reply("Jawaban diterima."); }
     if (d.agent.running.has(String(s.id)))
       return ctx.reply("Task masih berjalan. Gunakan /stop atau /new.");
     const stop = () =>
       new InlineKeyboard().text("⛔ Stop", `stop:${s.id}`);
-    const wait = await ctx.reply("⏳ Agent berpikir…", {
+    const usage = d.agent.sessionUsage(String(s.id));
+    const wait = await ctx.reply(`Mode ${d.tools.state.mode(String(s.id))} · ${usage.provider ?? "provider belum tersedia"}/${usage.model ?? "—"}\n⏳ Agent berpikir…`, {
       reply_markup: stop(),
     });
     const typing = () =>
@@ -473,6 +494,7 @@ export async function startTelegram(d: Deps) {
       if (e.session_id !== s.id) return;
       if (e.type === "token") text += String(e.data.text ?? "");
       else if (e.type === "tool") {
+        text = "";
         const cmd = e.data.command
           ? `$ ${String(e.data.command).slice(0, 120)}`
           : String(e.data.name);
@@ -492,6 +514,10 @@ export async function startTelegram(d: Deps) {
           );
           current = "";
         }
+      } else if (e.type === "progress" && e.data.kind !== "context") {
+        current = String(e.data.text ?? "").slice(0, 300);
+      } else if (e.type === "progress" && e.data.kind === "context" && Number(e.data.percent) >= 70) {
+        current = `Konteks ~${e.data.percent}% (estimasi). Gunakan /compact.`;
       } else return;
       if (Date.now() - last > 1100) flush();
     };

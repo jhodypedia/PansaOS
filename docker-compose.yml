@@ -2,7 +2,7 @@ services:
   core:
     build: {context: ., dockerfile: docker/Dockerfile.core}
     env_file: [.env]
-    environment: {PORT: '3001'}
+    environment: {PORT: '3001', SANDBOX_NETWORK: 'true'}
     volumes: [./data:/app/data, ./workspace:/app/workspace, ./skills:/app/skills, ./plugins:/app/plugins, /var/run/docker.sock:/var/run/docker.sock]
     restart: unless-stopped
     healthcheck: {test: [CMD, curl, -fsS, http://localhost:3001/health], interval: 30s, timeout: 5s, retries: 5}

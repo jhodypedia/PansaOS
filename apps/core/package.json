@@ -20,6 +20,7 @@
     "@grammyjs/files": "^1.1.1",
     "@grammyjs/runner": "^2.0.3",
     "@iarna/toml": "^2.2.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.11.1",
     "cheerio": "^1.0.0",

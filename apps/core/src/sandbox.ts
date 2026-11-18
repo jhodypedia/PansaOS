@@ -43,6 +43,50 @@ export function execute(
   });
 }
 export class Sandbox {
+  private queues = new Map<string, Promise<unknown>>();
+  async home(session: string) {
+    await this.root(session);
+    const home = path.join(config.workspace, ".agent-home", session);
+    await fs.mkdir(home, { recursive: true });
+    if (process.getuid?.() === 0) await fs.chown(home, 1000, 1000);
+    return home;
+  }
+  async persistent(session: string, command: string, signal: AbortSignal, timeout: number) {
+    const prior = this.queues.get(session) ?? Promise.resolve();
+    const next = prior.catch(() => {}).then(() => this.execPersistent(session, command, signal, timeout));
+    this.queues.set(session, next);
+    try { return await next; } finally { if (this.queues.get(session) === next) this.queues.delete(session); }
+  }
+  private async execPersistent(session: string, command: string, signal: AbortSignal, timeout: number) {
+    await this.root(session);
+    const home = await this.home(session);
+    const name = `pansa-shell-${session}`;
+    const combined = AbortSignal.any([signal, AbortSignal.timeout(timeout)]);
+    const inspected = await execute("docker", ["inspect", "-f", "{{.State.Running}}", name], combined);
+    let reset = false;
+    if (!inspected.includes("\ntrue")) {
+      const existed = inspected.startsWith("exit=0");
+      reset = existed || await fs.stat(path.join(home, ".shell-started")).then(() => true).catch(() => false);
+      if (existed) await execute("docker", ["rm", "-f", name], combined);
+      const hostBase = config.HOST_WORKSPACE_DIR ?? config.workspace;
+      const daemon = `mkdir -p /tmp/pansa-shell; mkfifo /tmp/pansa-shell/requests; exec 3<>/tmp/pansa-shell/requests; set -o history; HISTFILE=/home/agent/.bash_history; history -r; while IFS= read -r request <&3; do { source "$request"; } >"$request.out" 2>&1; result=$?; printf '%s\\n%s\\n' "$result" "$PWD" >"$request.status"; history -w; done`;
+      const started = await execute("docker", ["run", "-d", "--name", name, "--label", `pansa.session=${session}`, "--init", "--cpus", "2", "--memory", "2g", "--pids-limit", "512", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,size=1g", "--network", config.SANDBOX_NETWORK === "true" ? "bridge" : "none", "--user", "1000:1000", "-v", `${path.join(hostBase, session)}:/workspace`, "-v", `${path.join(hostBase, ".agent-home", session)}:/home/agent`, "-w", "/workspace", "-e", "HOME=/home/agent", "-e", "PATH=/home/agent/.local/bin:/workspace/.local/bin:/workspace/.tools:/usr/local/bin:/usr/bin:/bin", config.SANDBOX_IMAGE, "bash", "-c", daemon], combined);
+      if (!started.startsWith("exit=0")) throw new Error(started);
+      await fs.writeFile(path.join(home, ".shell-started"), new Date().toISOString());
+    }
+    const id = crypto.randomUUID();
+    const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const script = `request=/tmp/pansa-shell/${id}; printf '%s\\n' ${q(`history -s -- ${q(command)}\n${command}`)} >"$request"; while [ ! -p /tmp/pansa-shell/requests ]; do sleep 0.05; done; printf '%s\\n' "$request" >/tmp/pansa-shell/requests; while [ ! -f "$request.status" ]; do sleep 0.05; done; read -r code <"$request.status"; printf 'exit=%s\\n' "$code"; tail -n 1 "$request.status" | sed 's/^/cwd=/'; cat "$request.out"; rm -f "$request" "$request.out" "$request.status"`;
+    try {
+      const result = await execute("docker", ["exec", name, "bash", "-c", script], combined);
+      const cwd = result.match(/^cwd=(.*)$/m)?.[1];
+      if (cwd) await fs.writeFile(path.join(home, "shell-state.json"), JSON.stringify({ cwd, updated: new Date().toISOString() }));
+      return `${result.replace(/^exit=0\n/, "")}${reset ? "\nState shell ter-reset karena container sebelumnya berhenti." : ""}`;
+    } catch (e) {
+      await this.kill(session);
+      throw e;
+    }
+  }
   async kill(session: string): Promise<number> {
     if (!/^[a-f0-9-]{36}$/.test(session)) return 0;
     try {
@@ -72,6 +116,7 @@ export class Sandbox {
     if (!/^[a-f0-9-]{36}$/.test(session)) throw new Error("Session ID invalid");
     const root = path.join(config.workspace, session);
     await fs.mkdir(root, { recursive: true });
+    if (process.getuid?.() === 0) await fs.chown(root, 1000, 1000);
     return root;
   }
   async run(
@@ -79,7 +124,9 @@ export class Sandbox {
     command: string,
     signal: AbortSignal,
     timeout = 60000,
+    fresh = false,
   ): Promise<string> {
+    if (!fresh) return this.persistent(session, command, signal, timeout);
     const root = await this.root(session),
       combined = AbortSignal.any([
         signal,
@@ -112,26 +159,33 @@ export class Sandbox {
           `pansa.session=${session}`,
           "--init",
           "--cpus",
-          "1",
+          "2",
           "--memory",
-          "512m",
+          "2g",
           "--pids-limit",
-          "128",
+          "512",
           "--cap-drop",
           "ALL",
           "--security-opt",
           "no-new-privileges",
-          "--read-only",
           "--tmpfs",
-          "/tmp:rw,nosuid,size=128m",
+          "/tmp:rw,nosuid,size=1g",
           "--network",
           config.SANDBOX_NETWORK === "true" ? "bridge" : "none",
           "--user",
-          `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+          "1000:1000",
           "-v",
           `${hostRoot}:/workspace`,
           "-w",
           "/workspace",
+          "-e",
+          "HOME=/workspace/.home",
+          "-e",
+          "npm_config_prefix=/workspace/.local",
+          "-e",
+          "PIP_USER=1",
+          "-e",
+          "PATH=/workspace/.local/bin:/workspace/.tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           config.SANDBOX_IMAGE,
           "bash",
           "-lc",

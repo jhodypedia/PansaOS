@@ -44,6 +44,7 @@ import {
   Layers,
   LayoutDashboard,
   ListChecks,
+  Loader2,
   LogOut,
   MemoryStick,
   Menu,
@@ -145,6 +146,33 @@ function ActionBlock({
   const bad = d.status === "error";
   const label = String(d.command ?? d.content ?? name);
   const output = String(d.output ?? d.tail ?? d.error ?? "");
+  const json = useMemo(() => {
+    if (!output.trim()) return null;
+    try {
+      const parsed = JSON.parse(output.endsWith("…") ? output.slice(0, -1) : output);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [output]);
+  const summary = useMemo(() => {
+    if (!json) return null;
+    const rows = Object.entries(json as Record<string, unknown>)
+      .slice(0, 6)
+      .map(([k, v]) => {
+        const text =
+          typeof v === "string"
+            ? v
+            : typeof v === "number" || typeof v === "boolean"
+              ? String(v)
+              : Array.isArray(v)
+                ? `[${v.length}]`
+                : "objek";
+        return [k, text.length > 90 ? `${text.slice(0, 90)}…` : text] as const;
+      })
+      .filter(([, v]) => v !== "");
+    return rows.length ? rows : null;
+  }, [json]);
   return (
     <details className={`action ${bad ? "bad" : ok ? "ok" : "running"}`}>
       <summary>
@@ -157,8 +185,26 @@ function ActionBlock({
           {d.exitCode !== undefined && ` · exit ${String(d.exitCode)}`}
         </span>
       </summary>
+      {summary && (
+        <dl className="action-summary">
+          {summary.map(([k, v]) => (
+            <div key={k}>
+              <dt>{k}</dt>
+              <dd title={v}>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {json && typeof (json as Row).diff === "string" && <pre className="action-out diff-preview">{String((json as Row).diff)}</pre>}
       {output ? (
-        <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
+        summary ? (
+          <details className="action-raw">
+            <summary>Output mentah</summary>
+            <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
+          </details>
+        ) : (
+          <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
+        )
       ) : (
         <p className="muted text-xs mt-2">Belum ada output.</p>
       )}
@@ -672,7 +718,7 @@ export default function Dashboard() {
     [settings, setSettings] = useState({
       makefun_base_url: "",
       makefun_credentials: "",
-      max_steps: 25,
+      max_steps: 60,
       timezone: DEFAULT_TIMEZONE,
     }),
     [settingsInfo, setSettingsInfo] = useState<Row>({}),
@@ -724,6 +770,20 @@ export default function Dashboard() {
     setNotice(text);
     setTimeout(() => setNotice(""), 4500);
   };
+  const [sessionState, setSessionState] = useState<Row>({});
+  const [showArchive, setShowArchive] = useState(false);
+  const [commandList, setCommandList] = useState<{ name: string; description: string }[]>([]);
+  const [mcpServers, setMcpServers] = useState<Row[]>([]);
+  const [mcpForm, setMcpForm] = useState({ name: "", transport: "http", url: "", command: "", args: "", headers: "" });
+  useEffect(() => {
+    if (!logged) return;
+    void api("commands").then(r => setCommandList(r as { name: string; description: string }[])).catch(() => {});
+    const load = () => {
+      if (session) void api(`sessions/${session}/state`).then(r => setSessionState(r as Row)).catch(() => {});
+      void api("mcp").then(r => setMcpServers(r as Row[])).catch(() => {});
+    };
+    load(); const timer = setInterval(load, 3000); return () => clearInterval(timer);
+  }, [logged, session, api]);
   const refresh = useCallback(async () => {
     const [e, p, s, st, a] = await Promise.all([
       api("events"),
@@ -880,6 +940,7 @@ export default function Dashboard() {
         if (
           e.type === "task" &&
           e.session_id === session &&
+          (showArchive || Number(e.id) > Number(sessionState.visible_after ?? 0)) &&
           payload.status !== "running"
         ) {
           buffer.current = "";
@@ -979,7 +1040,7 @@ export default function Dashboard() {
         setSettings((prev) => ({
           ...prev,
           makefun_base_url: String(s.makefun_base_url ?? ""),
-          max_steps: Number(s.max_steps ?? 25),
+          max_steps: Number(s.max_steps ?? 60),
           timezone: saved,
         }));
       })
@@ -1072,7 +1133,7 @@ export default function Dashboard() {
       }
     }
     return out;
-  }, [events, session, data]);
+  }, [events, session, data, showArchive, sessionState.visible_after]);
   const activeProvider = useMemo(() => {
     const pinned = sessions.find((s) => String(s.id) === session)?.pinned;
     if (pinned) {
@@ -1939,6 +2000,7 @@ export default function Dashboard() {
               {tab === "chat" && (
                 <section className="panel generic chat-panel">
                   <div className="toolbar chat-toolbar">
+                    {session && <select aria-label="Mode session" value={String(sessionState.mode ?? "build")} onChange={e => { void api(`sessions/${session}/mode`, { mode: e.target.value }).then(() => setSessionState(prev => ({ ...prev, mode: e.target.value }))); }}><option value="plan">Plan · hanya baca</option><option value="build">Build · approval perubahan</option><option value="ask">Ask · tanya keputusan</option></select>}
                       <SessionPicker
                         sessions={sessions}
                         value={session}
@@ -2046,6 +2108,31 @@ export default function Dashboard() {
                     </div>
                   )}
                   <div className="chat-shell">
+                    {session && <div className="session-work-panel">
+                      <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} token · {(sessionState.usage as Row)?.cost == null ? "Biaya tidak diketahui" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
+                      {!!((sessionState.usage as Row)?.context) && <label>Konteks ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimasi)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
+                      {(sessionState.todos as Row[] ?? []).map((item, index) => <div key={index}>{item.status === "completed" ? "✓" : item.status === "in_progress" ? "◉" : "○"} {String(item.content)} · {String(item.status)}</div>)}
+                      {(sessionState.subagents as Row[] ?? []).map(task => <div key={String(task.id)}>Subagent {String(task.type)} · {String(task.status)} · sejak {fmtTime(task.since, zone)}</div>)}
+                      {(sessionState.questions as Row[] ?? []).map(q => <div key={String(q.id)}><p>{String(q.question)}</p>{(q.options as string[]).map(option => <button className="btn" key={option} onClick={() => void api(`questions/${q.id}`, { answer: option })}>{option}</button>)}</div>)}
+                      {!!(sessionState.checkpoints as Row[] ?? []).length && <details><summary>Checkpoint ({(sessionState.checkpoints as Row[]).length})</summary>{(sessionState.checkpoints as Row[]).map(cp => <div key={String(cp.id)}>{String(cp.name)} · {String(cp.time)} · {(cp.files as string[]).length} file</div>)}</details>}
+                      <details><summary>Command tersedia</summary>{commandList.map(command => <div key={command.name}>/{command.name} — {command.description}</div>)}</details>
+                      <button className="btn" onClick={() => setShowArchive(!showArchive)}>{showArchive ? "Tutup arsip" : "Buka arsip riwayat"}</button>
+                      <details><summary>MCP servers ({mcpServers.length})</summary>
+                        <p>Server stdio berjalan dalam sandbox session, tanpa Docker socket. Semua tool MCP memerlukan approval dan diblokir di mode Plan. Server remote mengelola aksesnya sendiri; jangan kirim secret atau path host.</p>
+                        {mcpServers.map(server => <div key={String(server.name)}>{String(server.name)} · {server.connected ? "terhubung" : "gagal"} · {Number(server.count)} tool {String(server.error ?? "")}<button className="btn" onClick={() => void api(`mcp/${server.name}`, undefined, "DELETE").then(() => api("mcp")).then(r => setMcpServers(r as Row[]))}>Hapus</button></div>)}
+                        <div className="mcp-form">
+                          <input aria-label="Nama MCP" placeholder="Nama server" value={mcpForm.name} onChange={e => setMcpForm({ ...mcpForm, name: e.target.value })} />
+                          <select aria-label="Transport MCP" value={mcpForm.transport} onChange={e => setMcpForm({ ...mcpForm, transport: e.target.value })}><option value="http">HTTP</option><option value="sse">SSE</option><option value="stdio">stdio sandbox</option></select>
+                          {mcpForm.transport === "stdio" ? <><input aria-label="Perintah MCP" placeholder="Perintah dalam sandbox" value={mcpForm.command} onChange={e => setMcpForm({ ...mcpForm, command: e.target.value })} /><input aria-label="Argumen MCP" placeholder={'Argumen JSON: ["/workspace/server.js"]'} value={mcpForm.args} onChange={e => setMcpForm({ ...mcpForm, args: e.target.value })} /></> : <><input aria-label="URL MCP" placeholder="https://server.example/mcp" value={mcpForm.url} onChange={e => setMcpForm({ ...mcpForm, url: e.target.value })} /><input type="password" autoComplete="off" aria-label="Header secret MCP" placeholder='Header JSON (disimpan terenkripsi)' value={mcpForm.headers} onChange={e => setMcpForm({ ...mcpForm, headers: e.target.value })} /></>}
+                          <button className="btn" disabled={!session || !mcpForm.name} onClick={() => {
+                            try {
+                              const payload = { name: mcpForm.name, transport: mcpForm.transport, session, ...(mcpForm.transport === "stdio" ? { command: mcpForm.command, args: JSON.parse(mcpForm.args || "[]") } : { url: mcpForm.url, headers: JSON.parse(mcpForm.headers || "{}") }) };
+                              void api("mcp", payload).then(r => { setMcpServers(r as Row[]); setMcpForm(prev => ({ ...prev, headers: "" })); }).catch(e => notify(String(e.message)));
+                            } catch { notify("Argumen/header harus JSON valid."); }
+                          }}>Simpan MCP</button>
+                        </div>
+                      </details>
+                    </div>}
                     <div
                       className={`chat-history ${view === "console" ? "console" : ""}`}
                       ref={historyRef}
@@ -2092,6 +2179,20 @@ export default function Dashboard() {
                                   e={i.e}
                                   onOpen={() => setView("console")}
                                 />
+                              );
+                            if (i.type === "progress")
+                              return (
+                                <div className="notice-row progress" key={i.key}>
+                                  <Loader2 size={11} className="spin" />
+                                  <span className="progress-text">
+                                    {String(d.text ?? "").slice(0, 200)}
+                                  </span>
+                                  {d.step !== undefined && (
+                                    <span className="progress-step">
+                                      {String(d.step)}/{String(d.of ?? "")}
+                                    </span>
+                                  )}
+                                </div>
                               );
                             if (i.type === "switch")
                               return (
@@ -2144,6 +2245,9 @@ export default function Dashboard() {
                             } else if (i.type === "message") {
                               cls = String(d.role ?? "");
                               line = `${String(d.role) === "user" ? "»" : "«"} ${String(d.content ?? "")}`;
+                            } else if (i.type === "progress") {
+                              cls = "run";
+                              line = `… ${String(d.text ?? "")}${d.step !== undefined ? ` (${String(d.step)}/${String(d.of ?? "")})` : ""}`;
                             } else if (i.type === "switch") {
                               line = `~ provider: ${String(d.reason ?? "")}`;
                             } else if (i.type === "error") {
@@ -2167,7 +2271,9 @@ export default function Dashboard() {
                         </div>
                       )}
                     </div>
-                    {!stick && (
+                  </div>
+                  {!stick && session && (
+                    <div className="chat-jump-row">
                       <button
                         className="chat-jump"
                         onClick={jump}
@@ -2175,8 +2281,8 @@ export default function Dashboard() {
                       >
                         <ArrowDown size={13} /> Terbaru
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                   {approvals
                     .filter((a) => a.session_id === session)
                     .map((a) => (
@@ -2224,6 +2330,7 @@ export default function Dashboard() {
                         }
                       }}
                     />
+                    {prompt.startsWith("/") && !prompt.includes(" ") && <div className="command-autocomplete">{commandList.filter(command => `/${command.name}`.startsWith(prompt)).map(command => <button type="button" className="btn" key={command.name} onClick={() => setPrompt(`/${command.name} `)}>/{command.name} · {command.description}</button>)}</div>}
                     <button
                       className="btn primary h-11"
                       disabled={busy || !prompt.trim()}

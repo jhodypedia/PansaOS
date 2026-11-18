@@ -256,9 +256,7 @@ export async function routes(
         );
         void agent
           .run(String(s.session_id), String(s.prompt))
-          .catch((e) =>
-            store.event("error", String(s.session_id), { error: String(e) }),
-          );
+          .catch((e) => agent.fail(String(s.session_id), e));
         started++;
       }
     }

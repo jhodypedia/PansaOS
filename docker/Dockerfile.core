@@ -12,12 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/core/dist ./apps/core/dist
 COPY --from=build /app/apps/core/node_modules ./apps/core/node_modules
+RUN /app/apps/core/node_modules/.bin/playwright install --with-deps chromium
+COPY --from=build /app/apps/core/dist ./apps/core/dist
 COPY --from=build /app/apps/core/package.json ./apps/core/package.json
 COPY skills ./skills
+COPY commands ./commands
 COPY SOUL.md ./SOUL.md
 RUN mkdir -p /app/data /app/workspace /app/plugins
-RUN /app/apps/core/node_modules/.bin/playwright install --with-deps chromium
 EXPOSE 3001
 CMD ["node","apps/core/dist/index.js"]
