@@ -275,7 +275,11 @@ app.post("/api/sessions", async (req) => {
 app.get("/api/commands", async () => (await agent.commands.list()).map(({ name, description }) => ({ name, description })));
 const mcp = new MCP(tools);
 app.get("/api/mcp", async () => mcp.list());
-app.post("/api/mcp", async req => { await mcp.save(ServerSchema.parse(req.body)); return mcp.list(); });
+app.post("/api/mcp", async req => {
+  const server = ServerSchema.parse(req.body);
+  await mcp.save(server);
+  return mcp.list();
+});
 app.delete("/api/mcp/:name", async req => { await mcp.remove((req.params as { name: string }).name); return { ok: true }; });
 for (const server of mcp.configs()) void mcp.connect(server);
 app.get("/api/sessions/:id/state", async req => {
@@ -310,6 +314,7 @@ app.delete("/api/sessions/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   if (!store.get("SELECT id FROM sessions WHERE id=?", id))
     return reply.code(404).send({ error: "Session tidak ditemukan" });
+  await mcp.removeSession(id);
   const removed = await agent.purge(id);
   return { ok: true, removed };
 });

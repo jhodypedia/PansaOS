@@ -46,7 +46,9 @@ export class Skills {
     });
   }
   async relevant(text: string) {
-    return (await this.list())
+    const browserToolsAvailable = text.includes("chrome-devtools__");
+    const skills = await this.list();
+    const relevant = skills
       .filter(
         (s) =>
           s.enabled &&
@@ -59,7 +61,14 @@ export class Skills {
               .filter((t) => t.length > 5)
               .some((t) => text.toLowerCase().includes(t))),
       )
-      .slice(0, 3)
+      .slice(0, 3);
+    if (browserToolsAvailable) {
+      for (const name of ["chrome-devtools", "troubleshooting"]) {
+        const skill = skills.find((item) => item.name === name && item.enabled);
+        if (skill && !relevant.some((item) => item.name === name)) relevant.push(skill);
+      }
+    }
+    return relevant
       .map(
         (s) =>
           `Skill ${s.name}: ${s.description}. Gunakan read_skill untuk instruksi lengkap.`,
