@@ -163,23 +163,69 @@ app.post("/api/auth/logout", async (req, reply) => {
   reply.clearCookie("pansa_session", { path: "/" });
   return { ok: true };
 });
-app.get("/api/events", async (req) => {
-  const q = req.query as { after?: string; session?: string; type?: string };
-  const after = Number(q.after ?? 0) || 0;
-  const where = ["id>?"];
-  const params: (string | number | null)[] = [after];
+app.get("/api/events", async (req, reply) => {
+  const q = req.query as {
+    after?: string;
+    session?: string;
+    type?: string;
+    before?: string;
+    limit?: string;
+    q?: string;
+    hide?: string;
+  };
+  const paged = q.before !== undefined || q.limit !== undefined;
+  const limit = paged
+    ? Math.min(Math.max(Number(q.limit ?? 50) || 50, 1), 100)
+    : 300;
+  const filter: string[] = [];
+  const filterParams: (string | number | null)[] = [];
   if (q.session) {
-    where.push("session_id=?");
-    params.push(q.session);
+    filter.push("session_id=?");
+    filterParams.push(q.session);
   }
   if (q.type) {
-    where.push("type=?");
-    params.push(q.type);
+    filter.push("type=?");
+    filterParams.push(q.type);
   }
-  return store.all(
-    `SELECT * FROM events WHERE ${where.join(" AND ")} ORDER BY id DESC LIMIT 300`,
-    ...params,
+  if (q.hide) {
+    const hidden = q.hide
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (hidden.length) {
+      filter.push(`type NOT IN (${hidden.map(() => "?").join(",")})`);
+      filterParams.push(...hidden);
+    }
+  }
+  if (q.q) {
+    filter.push("(type LIKE ? OR data LIKE ? OR session_id LIKE ?)");
+    const like = `%${q.q}%`;
+    filterParams.push(like, like, like);
+  }
+  const boundary = paged && q.before !== undefined ? "id<?" : "id>?";
+  const bound = paged
+    ? q.before !== undefined
+      ? Number(q.before) || 0
+      : 0
+    : Number(q.after ?? 0) || 0;
+  const where = [boundary, ...filter].join(" AND ");
+  const rows = store.all(
+    `SELECT * FROM events WHERE ${where} ORDER BY id DESC LIMIT ${paged ? limit + 1 : limit}`,
+    bound,
+    ...filterParams,
   );
+  if (!paged) return rows;
+  const more = rows.length > limit;
+  const total =
+    Number(
+      store.get(
+        `SELECT COUNT(*) n FROM events${filter.length ? ` WHERE ${filter.join(" AND ")}` : ""}`,
+        ...filterParams,
+      )?.n ?? 0,
+    ) || 0;
+  reply.header("x-has-more", more ? "1" : "0");
+  reply.header("x-total", String(total));
+  return rows.slice(0, limit);
 });
 app.get("/api/stats", async () => ({
   events: store.get("SELECT COUNT(*) n FROM events")?.n ?? 0,
@@ -208,9 +254,18 @@ app.post("/api/providers/:id/test", async (req) =>
   providers.test((req.params as { id: string }).id),
 );
 app.get("/api/sessions", async () =>
-  store.all(
-    "SELECT id,title,chat_id,auto_approve,pinned,strict,created_at FROM sessions ORDER BY created_at DESC",
-  ),
+  store
+    .all(
+      `SELECT s.id, s.title, s.chat_id, s.auto_approve, s.pinned, s.strict, s.created_at,
+        (SELECT json_extract(e.data,'$.status') FROM events e
+          WHERE e.session_id=s.id AND e.type='task' ORDER BY e.id DESC LIMIT 1) AS last_task
+       FROM sessions s ORDER BY s.created_at DESC`,
+    )
+    .map((row) => ({
+      ...row,
+      running:
+        agent.running.has(String(row.id)) || row.last_task === "running",
+    })),
 );
 app.post("/api/sessions", async (req) => {
   const body = req.body as { title?: string };

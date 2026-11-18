@@ -27,6 +27,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Code2,
@@ -293,22 +294,129 @@ function shorten(text: string, max = 40) {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
 }
-function shortDate(raw: string) {
-  const stamp = new Date(`${String(raw).replace(" ", "T")}Z`);
-  if (Number.isNaN(stamp.getTime())) return "";
-  const wib = new Date(stamp.getTime() + 7 * 3600_000);
-  return `${wib.getUTCDate()} ${MONTHS[wib.getUTCMonth()]} ${String(
-    wib.getUTCHours(),
-  ).padStart(2, "0")}:${String(wib.getUTCMinutes()).padStart(2, "0")}`;
+const DEFAULT_TIMEZONE = "Asia/Jakarta";
+const FALLBACK_ZONES = [
+  "Asia/Jakarta",
+  "Asia/Makassar",
+  "Asia/Jayapura",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Shanghai",
+  "Asia/Hong_Kong",
+  "Asia/Kolkata",
+  "Asia/Dubai",
+  "Australia/Perth",
+  "Australia/Sydney",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Moscow",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Sao_Paulo",
+  "Africa/Cairo",
+  "Africa/Johannesburg",
+  "UTC",
+];
+function zoneList() {
+  const native =
+    typeof Intl.supportedValuesOf === "function"
+      ? (Intl.supportedValuesOf("timeZone") as string[])
+      : [];
+  const merged = new Set<string>([DEFAULT_TIMEZONE, ...FALLBACK_ZONES, ...native]);
+  return [...merged].sort((a, b) => a.localeCompare(b, "en"));
+}
+function zoneLabel(zone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("id-ID", {
+      timeZone: zone,
+      timeZoneName: "short",
+    }).formatToParts(new Date());
+    const abbr = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+    const offset =
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        timeZoneName: "shortOffset",
+      })
+        .formatToParts(new Date())
+        .find((p) => p.type === "timeZoneName")
+        ?.value ?? "";
+    const shown = offset.replace(/^GMT/, "UTC").replace(/^UTC$/, "UTC+0");
+    return abbr && abbr !== shown ? `${abbr}, ${shown}` : shown;
+  } catch {
+    return "";
+  }
+}
+function parseStamp(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return new Date(value);
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const naive = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw);
+  if (naive) return new Date(`${raw.replace(" ", "T")}Z`);
+  return new Date(raw);
+}
+function fmtTime(
+  value: unknown,
+  zone: string,
+  opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" },
+) {
+  const stamp = parseStamp(value);
+  if (!stamp || Number.isNaN(stamp.getTime())) return "";
+  try {
+    return stamp.toLocaleTimeString("id-ID", { ...opts, timeZone: zone });
+  } catch {
+    return stamp.toLocaleTimeString("id-ID", opts);
+  }
+}
+function fmtDate(value: unknown, zone: string, opts?: Intl.DateTimeFormatOptions) {
+  const stamp = parseStamp(value);
+  if (!stamp || Number.isNaN(stamp.getTime())) return "";
+  const format: Intl.DateTimeFormatOptions = opts ?? {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  };
+  try {
+    return stamp.toLocaleString("id-ID", { ...format, timeZone: zone });
+  } catch {
+    return stamp.toLocaleString("id-ID", format);
+  }
+}
+function shortDate(raw: string, zone: string) {
+  const stamp = parseStamp(raw);
+  if (!stamp || Number.isNaN(stamp.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: zone,
+      day: "numeric",
+      month: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(stamp);
+    const get = (type: string) =>
+      parts.find((p) => p.type === type)?.value ?? "0";
+    return `${Number(get("day"))} ${MONTHS[Number(get("month")) - 1]} ${get("hour")}:${get("minute")}`;
+  } catch {
+    return "";
+  }
 }
 function SessionPicker({
   sessions,
   value,
   onChange,
+  zone = DEFAULT_TIMEZONE,
 }: {
   sessions: Row[];
   value: string;
   onChange: (id: string) => void;
+  zone?: string;
 }) {
   const [open, setOpen] = useState(false),
     [active, setActive] = useState(0),
@@ -321,11 +429,11 @@ function SessionPicker({
       ...sessions.map((s) => ({
         id: String(s.id),
         label: shorten(String(s.title ?? "")),
-        meta: shortDate(String(s.created_at ?? "")),
+        meta: shortDate(String(s.created_at ?? ""), zone),
         fresh: false,
       })),
     ],
-    [sessions],
+    [sessions, zone],
   );
   const current = options.find((o) => o.id === value) ?? options[0] ?? {
     id: "",
@@ -540,6 +648,16 @@ export default function Dashboard() {
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
     [session, setSession] = useState(""),
+    [stopped, setStopped] = useState<Record<string, number>>({}),
+    [zone, setZone] = useState<string>(DEFAULT_TIMEZONE),
+    [pageSize, setPageSize] = useState(50),
+    [pageNo, setPageNo] = useState(1),
+    [pageRows, setPageRows] = useState<Row[]>([]),
+    [pageCache, setPageCache] = useState<Record<number, Row[]>>({}),
+    [pageBusy, setPageBusy] = useState(false),
+    [pending, setPending] = useState(0),
+    [hasMore, setHasMore] = useState(false),
+    [totalEvents, setTotalEvents] = useState<number | null>(null),
     [prompt, setPrompt] = useState(""),
     [stream, setStream] = useState(""),
     [view, setView] = useState<"chat" | "console">("chat"),
@@ -555,6 +673,7 @@ export default function Dashboard() {
       makefun_base_url: "",
       makefun_credentials: "",
       max_steps: 25,
+      timezone: DEFAULT_TIMEZONE,
     }),
     [settingsInfo, setSettingsInfo] = useState<Row>({}),
     [schedule, setSchedule] = useState({ cron: "0 9 * * *", prompt: "" }),
@@ -567,6 +686,15 @@ export default function Dashboard() {
   const buffer = useRef("");
   const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef(1);
+  const sizeRef = useRef(50);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    pageRef.current = pageNo;
+  }, [pageNo]);
+  useEffect(() => {
+    sizeRef.current = pageSize;
+  }, [pageSize]);
   const api = useCallback(
     async (url: string, body?: unknown, method?: string) => {
       const response = await fetch(`/api/${url}`, {
@@ -610,6 +738,78 @@ export default function Dashboard() {
     setStats(st as Row);
     setApprovals(a as Row[]);
   }, [api]);
+  const lastId = (rows: Row[]) =>
+    Number(rows[rows.length - 1]?.id ?? 0) || 0;
+  const fetchPage = useCallback(
+    async (before: number | null, size: number, search: string) => {
+      const params = new URLSearchParams({
+        limit: String(size),
+        hide: "token",
+      });
+      if (before !== null) params.set("before", String(before));
+      if (search) params.set("q", search);
+      const response = await fetch(`/api/events?${params.toString()}`, {
+        credentials: "include",
+      });
+      const rows = (await response.json().catch(() => [])) as Row[];
+      if (!response.ok) throw new Error("Gagal memuat halaman event");
+      const total = Number(response.headers.get("x-total") ?? "");
+      return {
+        rows,
+        more: response.headers.get("x-has-more") === "1",
+        total: Number.isFinite(total) ? total : null,
+      };
+    },
+    [],
+  );
+  const loadPage = useCallback(
+    async (target: number) => {
+      if (target < 1) return;
+      setPageBusy(true);
+      try {
+        if (pageCache[target]) {
+          setPageNo(target);
+          setPending(0);
+          return;
+        }
+        const base = target === 1 ? [] : (pageCache[target - 1] ?? []);
+        if (target > 1 && !base.length) return;
+        const { rows, more, total } = await fetchPage(
+          target === 1 ? null : lastId(base),
+          pageSize,
+          query,
+        );
+        setPageCache((prev) => ({ ...prev, [target]: rows }));
+        setHasMore(more);
+        setTotalEvents(total);
+        setPageNo(target);
+        setPending(0);
+      } catch (e) {
+        setError(String(e instanceof Error ? e.message : e));
+      } finally {
+        setPageBusy(false);
+      }
+    },
+    [pageCache, pageSize, query, fetchPage],
+  );
+  const resetPages = useCallback(
+    async (size = pageSize, search = query) => {
+      setPageBusy(true);
+      try {
+        const { rows, more, total } = await fetchPage(null, size, search);
+        setPageCache({ 1: rows });
+        setHasMore(more);
+        setTotalEvents(total);
+        setPageNo(1);
+        setPending(0);
+      } catch (e) {
+        setError(String(e instanceof Error ? e.message : e));
+      } finally {
+        setPageBusy(false);
+      }
+    },
+    [pageSize, query, fetchPage],
+  );
   useEffect(() => {
     const once = new URLSearchParams(location.hash.slice(1)).get("login");
     if (once) {
@@ -627,10 +827,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (!logged) return;
     refresh().catch((e) => setError(String(e)));
+    void resetPages();
     const timer = setInterval(() => {
       refresh().catch(() => {});
     }, 15000);
     return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [logged, refresh]);
   useEffect(() => {
     if (!logged) return;
@@ -646,6 +848,16 @@ export default function Dashboard() {
         const e = JSON.parse(String(data)) as Row;
         if (e.type === "connected") return;
         setEvents((prev) => [e, ...prev].slice(0, 300));
+        if (e.type !== "token") {
+          if (pageRef.current === 1) {
+            setPageCache((prev) => {
+              const first = prev[1];
+              if (!first) return prev;
+              if (first.some((x) => String(x.id) === String(e.id))) return prev;
+              return { ...prev, 1: [e, ...first].slice(0, sizeRef.current) };
+            });
+          } else setPending((n) => n + 1);
+        }
         const payload = e.data as Row;
         if (e.type === "token" && e.session_id === session) {
           buffer.current += String(payload.text ?? "");
@@ -745,15 +957,30 @@ export default function Dashboard() {
     void loadFiles().catch((e) => setError(String(e)));
   }, [tab, logged, session, loadFiles]);
   useEffect(() => {
+    if (!logged) return;
+    void api("settings")
+      .then((r) => {
+        const saved = (r as Row).timezone;
+        if (typeof saved === "string" && saved) setZone(saved);
+      })
+      .catch(() => {});
+  }, [logged, api]);
+  useEffect(() => {
     if (tab !== "settings" || !logged) return;
     void api("settings")
       .then((r) => {
         const s = r as Row;
         setSettingsInfo(s);
+        const saved =
+          typeof s.timezone === "string" && s.timezone
+            ? s.timezone
+            : DEFAULT_TIMEZONE;
+        setZone(saved);
         setSettings((prev) => ({
           ...prev,
           makefun_base_url: String(s.makefun_base_url ?? ""),
           max_steps: Number(s.max_steps ?? 25),
+          timezone: saved,
         }));
       })
       .catch((e) => setError(String(e)));
@@ -855,6 +1082,18 @@ export default function Dashboard() {
     const first = providers.find((p) => p.enabled);
     return first ? `${String(first.name)} · ${String(first.model)}` : "—";
   }, [sessions, session, providers]);
+  const running = useMemo(() => {
+    if (!session) return false;
+    const last = events.find(
+      (e) => e.type === "task" && e.session_id === session,
+    );
+    const marker = stopped[session];
+    if (marker !== undefined && (!last || Number(last.id) <= marker))
+      return false;
+    if (last) return String(data(last).status ?? "") === "running";
+    const row = sessions.find((s) => String(s.id) === session);
+    return Boolean(row?.running);
+  }, [events, session, sessions, data, stopped]);
   const bountySteps = useMemo(
     () =>
       timeline
@@ -927,34 +1166,39 @@ export default function Dashboard() {
   const chart = Array.from({ length: 12 }, (_, i) => {
     const minutes = 55 - i * 5,
       time = Date.now() - minutes * 60000;
-    const usage = events.filter(
-      (e) =>
+    const usage = events.filter((e) => {
+      const at = parseStamp(e.created_at)?.getTime();
+      return (
         e.type === "usage" &&
-        new Date(String(e.created_at)).getTime() >= time &&
-        new Date(String(e.created_at)).getTime() < time + 300000,
-    );
+        at !== undefined &&
+        at >= time &&
+        at < time + 300000
+      );
+    });
     return {
       time: new Date(time).toLocaleTimeString("id-ID", {
         hour: "2-digit",
         minute: "2-digit",
+        timeZone: zone,
       }),
       tokens: usage.reduce((sum, e) => sum + Number(data(e).tokens ?? 0), 0),
       cost: usage.reduce((sum, e) => sum + Number(data(e).cost ?? 0), 0),
     };
   });
-  const Feed = ({ all = false }: { all?: boolean }) => (
+  const Feed = ({ all = false, rows }: { all?: boolean; rows?: Row[] }) => (
     <div className={all ? "" : "feed"}>
       <AnimatePresence initial={false}>
-        {(all
-          ? events.filter(
-              (e) =>
-                e.type !== "token" &&
-                (!query ||
-                  JSON.stringify(e)
-                    .toLowerCase()
-                    .includes(query.toLowerCase())),
-            )
-          : activity
+        {(rows ??
+          (all
+            ? events.filter(
+                (e) =>
+                  e.type !== "token" &&
+                  (!query ||
+                    JSON.stringify(e)
+                      .toLowerCase()
+                      .includes(query.toLowerCase())),
+              )
+            : activity)
         ).map((e) => (
           <motion.div
             key={String(e.id)}
@@ -1002,16 +1246,11 @@ export default function Dashboard() {
                 </details>
               )}
             </div>
-            <span className="feed-time">
-              {new Date(String(e.created_at)).toLocaleTimeString("id-ID", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </span>
+            <span className="feed-time">{fmtTime(e.created_at, zone)}</span>
           </motion.div>
         ))}
       </AnimatePresence>
-      {!(all ? events : activity).length && (
+      {!(rows ?? (all ? events : activity)).length && (
         <div className="empty">
           <Activity size={22} />
           {t.empty}
@@ -1494,11 +1733,77 @@ export default function Dashboard() {
                       aria-label="Cari event"
                       placeholder="Cari event..."
                       value={query}
-                      onChange={(e) => setQuery(e.target.value)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setQuery(value);
+                        if (searchTimer.current)
+                          clearTimeout(searchTimer.current);
+                        searchTimer.current = setTimeout(() => {
+                          void resetPages(pageSize, value);
+                        }, 320);
+                      }}
                       className="!py-2 !text-xs"
                     />
                   </div>
-                  <Feed all />
+                  {query && (
+                    <p className="pager-note">
+                      Pencarian mencakup seluruh riwayat event di server.
+                      {totalEvents !== null ? ` ${totalEvents} event cocok.` : ""}
+                    </p>
+                  )}
+                  {pending > 0 && pageNo > 1 && (
+                    <button
+                      className="btn new-events ml-5 mr-5 mt-4"
+                      onClick={() => void resetPages(pageSize, query)}
+                    >
+                      <Bell size={12} /> {pending} event baru — kembali ke
+                      halaman 1
+                    </button>
+                  )}
+                  <Feed all rows={pageCache[pageNo] ?? []} />
+                  <div className="pager">
+                    <button
+                      className="btn"
+                      disabled={pageNo === 1 || pageBusy}
+                      onClick={() => void loadPage(pageNo - 1)}
+                    >
+                      <ChevronLeft size={13} /> Sebelumnya
+                    </button>
+                    <span className="pager-info">
+                      Halaman {pageNo}
+                      {totalEvents !== null
+                        ? ` dari ${Math.max(1, Math.ceil(totalEvents / pageSize))}`
+                        : hasMore
+                          ? " · masih ada event lama"
+                          : ""}
+                    </span>
+                    <button
+                      className="btn"
+                      disabled={!hasMore || pageBusy}
+                      onClick={() => void loadPage(pageNo + 1)}
+                    >
+                      Berikutnya <ChevronRight size={13} />
+                    </button>
+                    <label className="pager-size">
+                      <span>Per halaman</span>
+                      <select
+                        aria-label="Jumlah event per halaman"
+                        value={pageSize}
+                        onChange={(e) => {
+                          const size = Number(e.target.value);
+                          setPageSize(size);
+                          sizeRef.current = size;
+                          void resetPages(size, query);
+                        }}
+                      >
+                        {[20, 50, 100].map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </section>
               )}
               {tab === "schedules" && (
@@ -1574,9 +1879,7 @@ export default function Dashboard() {
                           <p className="text-[10px] muted mt-1">
                             Session {String(s.session_id)} · terakhir{" "}
                             {Number(s.last_run)
-                              ? new Date(Number(s.last_run)).toLocaleString(
-                                  "id-ID",
-                                )
+                              ? fmtDate(Number(s.last_run), zone)
                               : "belum pernah"}
                           </p>
                         </div>
@@ -1636,9 +1939,10 @@ export default function Dashboard() {
               {tab === "chat" && (
                 <section className="panel generic chat-panel">
                   <div className="toolbar chat-toolbar">
-                    <SessionPicker
-                      sessions={sessions}
-                      value={session}
+                      <SessionPicker
+                        sessions={sessions}
+                        value={session}
+                        zone={zone}
                       onChange={(id) => {
                         setSession(id);
                         setStream("");
@@ -1689,21 +1993,27 @@ export default function Dashboard() {
                       >
                         <Download size={13} />
                       </button>
-                      {session && (
+                      {session && running && (
                         <button
                           className="btn danger"
                           disabled={busy}
                           onClick={() =>
                             void action(async () => {
+                              const id = session;
                               const r = (await api(
-                                `sessions/${session}/stop`,
+                                `sessions/${id}/stop`,
                                 {},
                               )) as { status?: string };
-                              notify(
-                                r?.status === "idle"
-                                  ? "Tidak ada task berjalan"
-                                  : "Task dihentikan",
-                              );
+                              setStopped((prev) => ({
+                                ...prev,
+                                [id]: Number(
+                                  events.find(
+                                    (e) =>
+                                      e.type === "task" && e.session_id === id,
+                                  )?.id ?? 0,
+                                ),
+                              }));
+                              if (r?.status !== "idle") notify("Task dihentikan");
                               setStream("");
                             }, null)
                           }
@@ -1817,9 +2127,7 @@ export default function Dashboard() {
                           })
                         : timeline.map((i) => {
                             const d = data(i.e);
-                            const stamp = new Date(
-                              String(i.e.created_at ?? Date.now()),
-                            ).toLocaleTimeString("id-ID", {
+                            const stamp = fmtTime(i.e.created_at ?? Date.now(), zone, {
                               hour: "2-digit",
                               minute: "2-digit",
                               second: "2-digit",
@@ -2501,6 +2809,32 @@ export default function Dashboard() {
                       <option value="en">English</option>
                     </select>
                   </div>
+                  <div className="list-card tz-card">
+                    <span>Zona waktu</span>
+                    <div className="tz-control">
+                      <select
+                        aria-label="Zona waktu"
+                        value={zone}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setZone(next);
+                          setSettings((prev) => ({ ...prev, timezone: next }));
+                          void action(async () => {
+                            await api("settings", { timezone: next });
+                          }, null);
+                        }}
+                      >
+                        {zoneList().map((z) => (
+                          <option key={z} value={z}>
+                            {z}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="tz-offset">
+                        {zoneLabel(zone) ? `${zone} (${zoneLabel(zone)})` : zone}
+                      </span>
+                    </div>
+                  </div>
                   <div className="list-card">
                     <span>Realtime connection</span>
                     <span className="badge">
@@ -2526,6 +2860,7 @@ export default function Dashboard() {
                             makefun_credentials:
                               settings.makefun_credentials || undefined,
                             max_steps: Number(settings.max_steps) || undefined,
+                            timezone: settings.timezone || DEFAULT_TIMEZONE,
                           }),
                         "Settings disimpan",
                       );
@@ -2609,15 +2944,63 @@ export default function Dashboard() {
             </motion.div>
           </AnimatePresence>
           <footer className="footer">
-            <span>
-              PANSAOS <span className="light">/</span> AGENT OS UNTUK BOUNTY
-              HUNTER
-            </span>
-            <span>
-              <span className="status-dot !w-1 !h-1" />{" "}
-              {connected ? "LIVE" : "CONNECTING"}{" "}
-              <span className="mx-2">·</span> v1.0.0
-            </span>
+            <div className="footer-brand">
+              <div className="footer-logo">
+                <span className="footer-mark">
+                  <Zap size={12} />
+                </span>
+                <span>
+                  PANSAOS <span className="light">/</span> AGENT OS UNTUK BOUNTY
+                  HUNTER
+                </span>
+              </div>
+              <p className="footer-tagline">
+                Satu dashboard untuk menjalankan agent, memantau task, dan
+                mengelola sesi bounty.
+              </p>
+            </div>
+            <nav className="footer-links" aria-label="Tautan footer">
+              <a
+                href="https://github.com/jhodypedia/PansaOS"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Github size={12} /> Repositori
+              </a>
+              <a
+                href="https://github.com/jhodypedia/PansaOS/issues"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Shield size={12} /> Laporkan isu
+              </a>
+              <a
+                href="https://github.com/jhodypedia/PansaOS#readme"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <BookOpen size={12} /> Dokumentasi
+              </a>
+              <a
+                href="https://github.com/jhodypedia/PansaOS/releases"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <FileText size={12} /> Rilis
+              </a>
+            </nav>
+            <div className="footer-meta">
+              <span className={`footer-chip ${connected ? "is-live" : ""}`}>
+                <span className="status-dot !w-1 !h-1" />
+                {connected ? "LIVE" : "CONNECTING"}
+              </span>
+              <span className="footer-chip">
+                <Server size={11} /> v1.0.0
+              </span>
+              <span className="footer-chip" title={zoneLabel(zone)}>
+                <Clock size={11} /> {zone.split("/").pop()?.replace(/_/g, " ")}
+              </span>
+            </div>
           </footer>
         </div>
       </main>

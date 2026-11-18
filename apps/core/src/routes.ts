@@ -196,6 +196,7 @@ export async function routes(
       ? "tersimpan"
       : "",
     max_steps: Number(store.setting("max_steps", String(config.MAX_STEPS))),
+    timezone: store.setting("timezone", "Asia/Jakarta"),
     sandbox: config.ALLOW_UNSANDBOXED === "true" ? "host" : "docker",
     sandbox_network: config.SANDBOX_NETWORK === "true",
     telegram: Boolean(config.BOT_TOKEN),
@@ -207,6 +208,24 @@ export async function routes(
         makefun_base_url: z.string().url().optional(),
         makefun_credentials: z.string().optional(),
         max_steps: z.number().int().min(1).max(100).optional(),
+        timezone: z
+          .string()
+          .min(1)
+          .max(64)
+          .refine(
+            (value) => {
+              try {
+                new Intl.DateTimeFormat("id-ID", {
+                  timeZone: value,
+                }).format(new Date());
+                return true;
+              } catch {
+                return false;
+              }
+            },
+            { message: "Zona waktu IANA tidak valid" },
+          )
+          .optional(),
       })
       .parse(req.body);
     if (b.makefun_base_url) store.set("makefun_base_url", b.makefun_base_url);
@@ -216,6 +235,7 @@ export async function routes(
         encrypt(b.makefun_credentials, config.MASTER_KEY),
       );
     if (b.max_steps) store.set("max_steps", String(b.max_steps));
+    if (b.timezone) store.set("timezone", b.timezone);
     return { ok: true };
   });
   app.post("/api/scheduler/tick", async () => {
