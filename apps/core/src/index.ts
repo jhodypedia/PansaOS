@@ -233,6 +233,13 @@ app.post("/api/sessions/:id/message", async (req, reply) => {
   );
   return { accepted: true };
 });
+app.delete("/api/sessions/:id", async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  if (!store.get("SELECT id FROM sessions WHERE id=?", id))
+    return reply.code(404).send({ error: "Session tidak ditemukan" });
+  const removed = await agent.purge(id);
+  return { ok: true, removed };
+});
 app.post("/api/sessions/:id/stop", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   if (!store.get("SELECT id FROM sessions WHERE id=?", id))

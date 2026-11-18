@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import { config } from "./config.js";
 import { Store } from "./store.js";
 import { Providers, type Message } from "./providers.js";
@@ -58,6 +59,15 @@ export class Agent {
       return "reaped";
     }
     return "idle";
+  }
+  async purge(session: string): Promise<boolean> {
+    this.stop(session);
+    this.running.delete(session);
+    await this.tools.sandbox.kill(session).catch(() => 0);
+    const root = path.join(config.workspace, session);
+    if (/^[a-f0-9-]{36}$/.test(session) && root !== config.workspace)
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+    return this.store.purgeSession(session) > 0;
   }
   async run(
     session: string,

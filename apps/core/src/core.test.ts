@@ -135,6 +135,83 @@ describe("provider manager", () => {  it("rejects empty/refusal/repetitive/malfo
     db.db.close();
   });
 });
+describe("session purge", () => {
+  it("removes the session and every row bound to it, keeping other sessions", async () => {
+    Object.assign(process.env, {
+      MASTER_KEY: key,
+      DASH_TOKEN: "test-dash-token-0123456789abcdef",
+      DATA_DIR: "/tmp/pansa-purge-test",
+      WORKSPACE_DIR: "/tmp/pansa-purge-test",
+    });
+    const { Agent } = await import("./agent.js");
+    const db = new Store(":memory:");
+    const providers = new Providers(db, key);
+    const killed: string[] = [];
+    const tools = {
+      pending: new Map<string, (ok: boolean) => void>(),
+      sandbox: {
+        kill: async (s: string) => {
+          killed.push(s);
+          return 1;
+        },
+      },
+    } as unknown as ConstructorParameters<typeof Agent>[2];
+    const agent = new Agent(db, providers, tools);
+    const keep = String(db.session("keep").id);
+    const gone = String(db.session("gone").id);
+    db.run(
+      "INSERT INTO messages(session_id,payload) VALUES(?,?)",
+      gone,
+      JSON.stringify({ role: "user", content: "hi" }),
+    );
+    db.event("task", gone, { status: "running", prompt: "x" });
+    db.remember("k", "v", "fact", gone);
+    db.run(
+      "INSERT INTO approvals(id,session_id,tool,args) VALUES(?,?,?,?)",
+      "approval-1",
+      gone,
+      "run_command",
+      "{}",
+    );
+    db.run(
+      "INSERT INTO schedules(id,cron,prompt,session_id) VALUES(?,?,?,?)",
+      "schedule-1",
+      "0 9 * * *",
+      "prompt",
+      gone,
+    );
+    db.run(
+      "INSERT INTO bounties(id,title,session_id) VALUES(?,?,?)",
+      "bounty-1",
+      "b",
+      gone,
+    );
+    expect(await agent.purge(gone)).toBe(true);
+    expect(killed).toContain(gone);
+    for (const table of [
+      "messages",
+      "events",
+      "memory",
+      "approvals",
+      "schedules",
+    ])
+      expect(
+        db.get(`SELECT COUNT(*) n FROM ${table} WHERE session_id=?`, gone)?.n,
+      ).toBe(0);
+    expect(db.get("SELECT COUNT(*) n FROM sessions WHERE id=?", gone)?.n).toBe(
+      0,
+    );
+    expect(
+      db.get("SELECT session_id FROM bounties WHERE id='bounty-1'")?.session_id,
+    ).toBe(null);
+    expect(db.get("SELECT COUNT(*) n FROM sessions WHERE id=?", keep)?.n).toBe(
+      1,
+    );
+    expect(await agent.purge(gone)).toBe(false);
+    db.db.close();
+  });
+});
+
 describe("agent stop", () => {
   it("reports idle without inventing events and reaps a stale running task", async () => {
     Object.assign(process.env, {

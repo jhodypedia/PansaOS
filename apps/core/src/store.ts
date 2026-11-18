@@ -135,6 +135,22 @@ export class Store {
         )
       : this.all("SELECT * FROM memory ORDER BY rowid DESC LIMIT 100");
   }
+  purgeSession(session: string): number {
+    return this.db.transaction(() => {
+      this.run("DELETE FROM memory WHERE session_id=?", session);
+      this.run("DELETE FROM approvals WHERE session_id=?", session);
+      this.run("DELETE FROM schedules WHERE session_id=?", session);
+      this.run(
+        "UPDATE bounties SET session_id=NULL WHERE session_id=?",
+        session,
+      );
+      this.run("DELETE FROM messages WHERE session_id=?", session);
+      this.run("DELETE FROM events WHERE session_id=?", session);
+      return Number(
+        this.run("DELETE FROM sessions WHERE id=?", session).changes,
+      );
+    })();
+  }
   setting(key: string, fallback = ""): string {
     return String(
       this.get("SELECT value FROM settings WHERE key=?", key)?.value ??
