@@ -301,6 +301,12 @@ export class Providers {
           : 0),
     );
     if (strict && pin) candidates = candidates.filter((p) => p.id === pin);
+    const names = new Map(
+      this.store
+        .all("SELECT id,name FROM providers")
+        .map((p) => [String(p.id), String(p.name)]),
+    );
+    const label = (id: string) => names.get(id) ?? id;
     let previous: string | undefined,
       reason = "";
     for (const p of candidates) {
@@ -316,7 +322,13 @@ export class Providers {
         continue;
       }
       if (previous)
-        this.store.event("switch", session, { from: previous, to: id, reason });
+        this.store.event("switch", session, {
+          from: previous,
+          fromName: label(previous),
+          to: id,
+          toName: label(id),
+          reason,
+        });
       for (let attempt = 0; attempt < 2; attempt++) {
         const start = Date.now();
         window.push(start);

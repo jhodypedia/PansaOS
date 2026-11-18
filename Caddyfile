@@ -1,4 +1,4 @@
-{$PANSA_DOMAIN:localhost} {
+http://{$PANSA_DOMAIN:localhost} {
   encode zstd gzip
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -7,6 +7,10 @@
     Referrer-Policy no-referrer
   }
   @core path /api/* /ws /telegram/webhook
-  handle @core {reverse_proxy core:3001}
-  handle {reverse_proxy dashboard:3000}
+  handle @core {
+    reverse_proxy core:3001
+  }
+  handle {
+    reverse_proxy dashboard:3000
+  }
 }

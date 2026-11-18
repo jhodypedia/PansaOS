@@ -1,6 +1,11 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  motion,
+  AnimatePresence,
+  useReducedMotion,
+  useAnimationFrame,
+} from "framer-motion";
 import {
   AreaChart,
   Area,
@@ -12,6 +17,7 @@ import {
 } from "recharts";
 import {
   Activity,
+  ArrowDown,
   ArrowDownToLine,
   ArrowRight,
   ArrowUpRight,
@@ -24,8 +30,10 @@ import {
   Clock,
   Code2,
   Command,
+  Copy,
   Cpu,
   DollarSign,
+  Download,
   ExternalLink,
   FileText,
   Gauge,
@@ -33,9 +41,12 @@ import {
   Globe,
   Layers,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   MemoryStick,
+  Menu,
   MessageSquare,
+  Moon,
   MoreHorizontal,
   Network,
   Play,
@@ -48,6 +59,7 @@ import {
   Settings,
   Shield,
   Square,
+  Sun,
   Terminal,
   Trash2,
   Trophy,
@@ -73,6 +85,195 @@ const tabs = [
   ["schedules", Clock],
   ["settings", Settings],
 ] as const;
+function Rich({ text }: { text: string }) {
+  const blocks = useMemo(() => splitFences(text), [text]);
+  return (
+    <>
+      {blocks.map((b, i) =>
+        b.code !== undefined ? (
+          <pre className="code-block" key={i}>
+            {b.lang && <span className="code-lang">{b.lang}</span>}
+            <code>{b.code}</code>
+          </pre>
+        ) : (
+          <p className="rich" key={i}>
+            {inline(b.text)}
+          </p>
+        ),
+      )}
+    </>
+  );
+}
+function splitFences(text: string): { code?: string; lang?: string; text: string }[] {
+  const out: { code?: string; lang?: string; text: string }[] = [];
+  const re = /```(\w*)\n?([\s\S]*?)```/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index) });
+    out.push({ code: (m[2] ?? "").replace(/\n$/, ""), lang: m[1] || undefined, text: "" });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out.filter((b) => b.code !== undefined || b.text.trim());
+}
+function inline(text: string) {
+  const parts = text.split(/(`[^`]+`|https?:\/\/[^\s)<>]+)/g);
+  return parts.map((p, i) => {
+    if (/^`[^`]+`$/.test(p)) return <code key={i}>{p.slice(1, -1)}</code>;
+    if (/^https?:\/\//.test(p))
+      return (
+        <a key={i} href={p} target="_blank" rel="noreferrer noopener">
+          {p}
+        </a>
+      );
+    return <span key={i}>{p}</span>;
+  });
+}
+function ActionBlock({
+  e,
+  onOpen,
+}: {
+  e: Row;
+  onOpen?: () => void;
+}) {
+  const d = (typeof e.data === "string" ? JSON.parse(e.data) : e.data) as Row;
+  const name = String(d.tool ?? d.name ?? "tool");
+  const ok = d.status === "done";
+  const bad = d.status === "error";
+  const label = String(d.command ?? d.content ?? name);
+  const output = String(d.output ?? d.tail ?? d.error ?? "");
+  return (
+    <details className={`action ${bad ? "bad" : ok ? "ok" : "running"}`}>
+      <summary>
+        <span className="action-icon">
+          {bad ? <X size={11} /> : ok ? <Check size={11} /> : <RefreshCw size={11} className="spin" />}
+        </span>
+        <code className="action-cmd">{label.length > 160 ? `${label.slice(0, 160)}…` : label}</code>
+        <span className="action-meta">
+          {d.durationMs !== undefined && `${Number(d.durationMs)} ms`}
+          {d.exitCode !== undefined && ` · exit ${String(d.exitCode)}`}
+        </span>
+      </summary>
+      {output ? (
+        <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
+      ) : (
+        <p className="muted text-xs mt-2">Belum ada output.</p>
+      )}
+      {onOpen && (
+        <button className="btn mt-2" onClick={onOpen}>
+          <Terminal size={11} /> Buka di Console
+        </button>
+      )}
+    </details>
+  );
+}
+const LOOP_PATH =
+  "M100 55 H300 Q324 55 324 79 V121 Q324 145 300 145 H100 Q76 145 76 121 V79 Q76 55 100 55 Z";
+
+function FlowDiagram({ active }: { active: boolean }) {
+  const reduced = useReducedMotion();
+  const wrap = useRef<HTMLDivElement>(null);
+  const pathRef = useRef<SVGPathElement>(null);
+  const dots = useRef<(HTMLSpanElement | null)[]>([]);
+  const nodes = useRef<(HTMLDivElement | null)[]>([]);
+  const box = useRef({ w: 0, h: 0 });
+  const pos = useRef(0);
+  useEffect(() => {
+    if (!wrap.current) return;
+    const ro = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      box.current = {
+        w: entry.contentRect.width,
+        h: entry.contentRect.height,
+      };
+    });
+    ro.observe(wrap.current);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    if (reduced) return;
+    let i = 0;
+    const id = setInterval(() => {
+      nodes.current.forEach((n, k) => n?.classList.toggle("glow", k === i));
+      i = (i + 1) % 4;
+    }, 900);
+    return () => {
+      clearInterval(id);
+      nodes.current.forEach((n) => n?.classList.remove("glow"));
+    };
+  }, [reduced]);
+  useAnimationFrame((_, delta) => {
+    const path = pathRef.current;
+    if (reduced || !path || document.hidden) return;
+    const len = path.getTotalLength();
+    if (!len) return;
+    pos.current = (pos.current + delta * (active ? 0.09 : 0.035)) % len;
+    const { w, h } = box.current;
+    dots.current.forEach((dot, i) => {
+      if (!dot) return;
+      const p = path.getPointAtLength((pos.current - i * 12 + len * 2) % len);
+      dot.style.transform = `translate3d(${(p.x / 400) * w}px, ${(p.y / 200) * h}px, 0) translate(-50%, -50%)`;
+      dot.style.opacity = String(1 - i * 0.3);
+    });
+  });
+  return (
+    <div className={`diagram loop compact${active ? " active" : ""}`} ref={wrap}>
+      <svg
+        className="loop-path"
+        viewBox="0 0 400 200"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="loop-flow" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="var(--violet)" />
+            <stop offset="50%" stopColor="var(--cyan)" />
+            <stop offset="100%" stopColor="var(--ok, #37d67a)" />
+          </linearGradient>
+        </defs>
+        <path ref={pathRef} d={LOOP_PATH} className="loop-base" />
+        <path d={LOOP_PATH} className="loop-trace" stroke="url(#loop-flow)" />
+        <path d={LOOP_PATH} className="loop-ants" stroke="url(#loop-flow)" />
+      </svg>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="flow-dot"
+          ref={(el) => {
+            dots.current[i] = el;
+          }}
+        />
+      ))}
+      {[
+        [Send, "Telegram"],
+        [Command, "Pansa Core"],
+        [Layers, "Provider"],
+        [Wrench, "Tools"],
+      ].map(([Icon, label], i) => {
+        const I = Icon as typeof Activity;
+        return (
+          <div
+            className="node"
+            key={String(label)}
+            style={{ "--node-x": i < 2 ? (i === 0 ? "30%" : "70%") : (i === 2 ? "70%" : "30%"), "--node-y": i < 2 ? "25%" : "75%" } as React.CSSProperties}
+            ref={(el) => {
+              nodes.current[i] = el;
+            }}
+          >
+            <div className="node-icon">
+              <I size={i === 1 ? 25 : 19} />
+            </div>
+            <span>{String(label)}</span>
+          </div>
+        );
+      })}
+      <span className="diagram-label">
+        Telegram → Core → Provider → Tools → Telegram
+      </span>
+    </div>
+  );
+}
 function Counter({ value }: { value: number }) {
   const [n, setN] = useState(value);
   const reduced = useReducedMotion();
@@ -106,7 +307,25 @@ export default function Dashboard() {
   const [token, setToken] = useState(""),
     [logged, setLogged] = useState(false),
     [tab, setTab] = useState<Tab>("overview"),
-    [lang, setLang] = useState<"id" | "en">("id");
+    [lang, setLang] = useState<"id" | "en">("id"),
+    [theme, setTheme] = useState<"dark" | "light">("dark"),
+    [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    const saved = window.localStorage.getItem("pansa-theme");
+    const prefers = window.matchMedia("(prefers-color-scheme: light)").matches;
+    setTheme(saved === "light" || saved === "dark" ? saved : prefers ? "light" : "dark");
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("pansa-theme", theme);
+  }, [theme]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const t = dictionaries[lang];
   const [events, setEvents] = useState<Row[]>([]),
     [providers, setProviders] = useState<Row[]>([]),
@@ -121,6 +340,8 @@ export default function Dashboard() {
     [session, setSession] = useState(""),
     [prompt, setPrompt] = useState(""),
     [stream, setStream] = useState(""),
+    [view, setView] = useState<"chat" | "console">("chat"),
+    [stick, setStick] = useState(true),
     [query, setQuery] = useState(""),
     [markdown, setMarkdown] = useState(""),
     [showForm, setShowForm] = useState(false),
@@ -141,15 +362,20 @@ export default function Dashboard() {
       api_key: "",
       model: "",
     });
+  const buffer = useRef("");
+  const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
   const api = useCallback(
     async (url: string, body?: unknown, method?: string) => {
       const response = await fetch(`/api/${url}`, {
         method: method ?? (body ? "POST" : "GET"),
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
+        ...(body !== undefined
+          ? {
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }
+          : {}),
       });
       const data: unknown = await response.json().catch(() => ({}));
       const message = (data as { error?: string }).error;
@@ -219,8 +445,36 @@ export default function Dashboard() {
         if (e.type === "connected") return;
         setEvents((prev) => [e, ...prev].slice(0, 300));
         const payload = e.data as Row;
-        if (e.type === "token" && e.session_id === session)
-          setStream((prev) => prev + String(payload.text ?? ""));
+        if (e.type === "token" && e.session_id === session) {
+          buffer.current += String(payload.text ?? "");
+          if (!ticker.current)
+            ticker.current = setTimeout(() => {
+              const chunk = buffer.current;
+              buffer.current = "";
+              ticker.current = null;
+              if (chunk) setStream((prev) => (prev + chunk).slice(-20000));
+            }, 120);
+        }
+        if (e.type === "message" && e.session_id === session) {
+          buffer.current = "";
+          if (ticker.current) {
+            clearTimeout(ticker.current);
+            ticker.current = null;
+          }
+          setStream("");
+        }
+        if (
+          e.type === "task" &&
+          e.session_id === session &&
+          payload.status !== "running"
+        ) {
+          buffer.current = "";
+          if (ticker.current) {
+            clearTimeout(ticker.current);
+            ticker.current = null;
+          }
+          setStream("");
+        }
         if (e.type === "switch")
           notify(`Provider berpindah: ${payload.reason}`);
         if (e.type === "task" || e.type === "approval" || e.type === "usage")
@@ -235,6 +489,11 @@ export default function Dashboard() {
     return () => {
       active = false;
       clearTimeout(timer);
+      if (ticker.current) {
+        clearTimeout(ticker.current);
+        ticker.current = null;
+      }
+      buffer.current = "";
       socket?.close();
     };
   }, [logged, session, refresh]);
@@ -297,12 +556,15 @@ export default function Dashboard() {
       })
       .catch((e) => setError(String(e)));
   }, [tab, logged, api]);
-  const action = async (fn: () => Promise<unknown>, message = "Tersimpan") => {
+  const action = async (
+    fn: () => Promise<unknown>,
+    message: string | null = "Tersimpan",
+  ) => {
     setBusy(true);
     setError("");
     try {
       await fn();
-      notify(message);
+      if (message) notify(message);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -326,10 +588,139 @@ export default function Dashboard() {
       setPrompt("");
     }, "Task dikirim");
   };
-  const data = (e: Row): Row =>
-    typeof e.data === "string"
-      ? (JSON.parse(e.data) as Row)
-      : ((e.data as Row) ?? {});
+  const data = useCallback(
+    (e: Row): Row =>
+      typeof e.data === "string"
+        ? (JSON.parse(e.data) as Row)
+        : ((e.data as Row) ?? {}),
+    [],
+  );
+  const merge = useCallback((incoming: Row[]) => {
+    setEvents((prev) => {
+      const seen = new Set(prev.map((x) => String(x.id)));
+      const added = incoming.filter((x) => !seen.has(String(x.id)));
+      if (!added.length) return prev;
+      return [...added, ...prev]
+        .sort((a, b) => Number(b.id) - Number(a.id))
+        .slice(0, 600);
+    });
+  }, []);
+  useEffect(() => {
+    if (!logged || !session) return;
+    void api(`events?session=${encodeURIComponent(session)}`)
+      .then((r) => merge(r as Row[]))
+      .catch(() => {});
+  }, [logged, session, api, merge]);
+  const timeline = useMemo(() => {
+    const own = events
+      .filter(
+        (e) =>
+          e.session_id === session &&
+          e.type !== "token" &&
+          e.type !== "usage" &&
+          e.type !== "audit",
+      )
+      .slice()
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    const pending = new Map<string, number>();
+    const out: { key: string; type: string; e: Row }[] = [];
+    for (const e of own) {
+      if (e.type !== "tool") {
+        out.push({ key: String(e.id), type: String(e.type), e });
+        continue;
+      }
+      const d = data(e);
+      const sig = `${String(d.tool ?? d.name)}|${String(d.command ?? d.content ?? "")}`;
+      const at = pending.get(sig);
+      if (d.status === "running") {
+        pending.set(sig, out.length);
+        out.push({ key: String(e.id), type: "tool", e });
+      } else if (at !== undefined && out[at]) {
+        out[at] = { key: out[at].key, type: "tool", e };
+        pending.delete(sig);
+      } else {
+        out.push({ key: String(e.id), type: "tool", e });
+      }
+    }
+    return out;
+  }, [events, session, data]);
+  const activeProvider = useMemo(() => {
+    const pinned = sessions.find((s) => String(s.id) === session)?.pinned;
+    if (pinned) {
+      const p = providers.find((x) => String(x.id) === String(pinned));
+      if (p) return `${String(p.name)} · ${String(p.model)}`;
+    }
+    const first = providers.find((p) => p.enabled);
+    return first ? `${String(first.name)} · ${String(first.model)}` : "—";
+  }, [sessions, session, providers]);
+  const bountySteps = useMemo(
+    () =>
+      timeline
+        .filter(
+          (i) => i.type === "tool" && String(data(i.e).tool ?? "").startsWith("makefun_"),
+        )
+        .map((i) => {
+          const d = data(i.e);
+          return {
+            key: i.key,
+            name: String(d.tool).replace(/^makefun_/, ""),
+            status: String(d.status ?? ""),
+          };
+        }),
+    [timeline, data],
+  );
+  const transcript = useMemo(
+    () =>
+      timeline
+        .map((i) => {
+          const d = data(i.e);
+          if (i.type === "message")
+            return `## ${String(d.role)}\n\n${String(d.content ?? "")}`;
+          if (i.type === "tool")
+            return `### ${String(d.tool ?? d.name)} · ${String(d.status)}\n\n\`\`\`\n${String(d.command ?? "")}\n\`\`\`\n\n${String(d.output ?? d.tail ?? "").slice(0, 1500)}`;
+          if (i.type === "switch")
+            return `> provider switch: ${String(d.reason ?? "")}`;
+          if (i.type === "task")
+            return `> task ${String(d.status ?? "")} ${String(d.error ?? "")}`;
+          if (i.type === "error") return `> error: ${String(d.error ?? "")}`;
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n\n"),
+    [timeline, data],
+  );
+  useEffect(() => {
+    const el = historyRef.current;
+    if (!el || !stick) return;
+    el.scrollTop = el.scrollHeight;
+  }, [timeline, stream, view, stick]);
+  const onScroll = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 120);
+  };
+  const jump = () => {
+    const el = historyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setStick(true);
+  };
+  const copy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(label);
+    } catch {
+      setError("Clipboard tidak tersedia di browser ini");
+    }
+  };
+  const download = () => {
+    const blob = new Blob([transcript], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `pansa-${session.slice(0, 8) || "chat"}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    notify("Transkrip diunduh");
+  };
   const activity = events.filter((e) => e.type !== "token").slice(0, 8);
   const chart = Array.from({ length: 12 }, (_, i) => {
     const minutes = 55 - i * 5,
@@ -388,8 +779,10 @@ export default function Dashboard() {
               </strong>
               <p>
                 {String(
-                  data(e).content ??
+                  data(e).command ??
+                    data(e).content ??
                     data(e).output ??
+                    data(e).tail ??
                     data(e).reason ??
                     data(e).prompt ??
                     data(e).error ??
@@ -465,7 +858,8 @@ export default function Dashboard() {
       </div>
     );
   return (
-    <div className="app">
+    <div className={navOpen ? "app nav-open" : "app"}>
+      {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
       <aside className="sidebar">
         <a className="brand" href="#" onClick={() => setTab("overview")}>
           <span className="brand-icon">
@@ -473,7 +867,7 @@ export default function Dashboard() {
           </span>
           <span className="brand-text">
             Pansa<em>OS</em>
-            <span className="text-[8px] tracking-normal text-[#55566d] ml-2">
+            <span className="text-[8px] tracking-normal muted ml-2">
               v1.0
             </span>
           </span>
@@ -483,7 +877,10 @@ export default function Dashboard() {
           {tabs.slice(0, 7).map(([key, Icon]) => (
             <button
               key={key}
-              onClick={() => setTab(key)}
+              onClick={() => {
+                setTab(key);
+                setNavOpen(false);
+              }}
               className={tab === key ? "active" : ""}
             >
               <Icon size={16} />
@@ -495,7 +892,10 @@ export default function Dashboard() {
           {tabs.slice(7, 11).map(([key, Icon]) => (
             <button
               key={key}
-              onClick={() => setTab(key)}
+              onClick={() => {
+                setTab(key);
+                setNavOpen(false);
+              }}
               className={tab === key ? "active" : ""}
             >
               <Icon size={16} />
@@ -507,7 +907,10 @@ export default function Dashboard() {
           ))}
           <div className="nav-label">SYSTEM</div>
           <button
-            onClick={() => setTab("settings")}
+            onClick={() => {
+              setTab("settings");
+              setNavOpen(false);
+            }}
             className={tab === "settings" ? "active" : ""}
           >
             <Settings size={16} />
@@ -519,14 +922,14 @@ export default function Dashboard() {
             <span className="status-dot" />
             {connected ? "Semua sistem terhubung" : "Menghubungkan realtime"}
             <p>Self-hosted. Sepenuhnya milikmu.</p>
-            <div className="flex justify-between mt-3 text-[9px] text-[#64677d]">
+            <div className="flex justify-between mt-3 text-[9px] muted">
               <span>CORE ENGINE</span>
-              <span className="text-[#00e5c3]">
+              <span style={{ color: "var(--cyan)" }}>
                 {connected ? "ONLINE" : "CONNECTING"}
               </span>
             </div>
           </div>
-          <div className="flex justify-between items-center pt-5 text-[10px] text-[#64677d]">
+          <div className="flex justify-between items-center pt-5 text-[10px] muted">
             <span>
               Dokumentasi <ExternalLink size={10} className="inline ml-1" />
             </span>
@@ -545,8 +948,15 @@ export default function Dashboard() {
       </aside>
       <main className="main">
         <header className="topbar">
+          <button
+            className="icon-btn menu"
+            aria-label="Buka menu"
+            onClick={() => setNavOpen(true)}
+          >
+            <Menu size={17} />
+          </button>
           <div className="breadcrumb">
-            Workspace <ChevronRight size={11} className="inline ml-3" />
+            Workspace <ChevronRight size={11} className="inline" />
             <span>{t[tab]}</span>
           </div>
           <div className="top-actions">
@@ -555,7 +965,18 @@ export default function Dashboard() {
               {Number(stats.running) > 0 ? "Agent bekerja" : "Agent siap"}
             </span>
             <span className="keycap">SELF-HOSTED</span>
-            <button aria-label="Notifikasi" onClick={() => setTab("live")}>
+            <button
+              className="icon-btn theme"
+              aria-label={theme === "dark" ? "Mode terang" : "Mode gelap"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
+            <button
+              className="icon-btn theme"
+              aria-label="Notifikasi"
+              onClick={() => setTab("live")}
+            >
               <Bell size={15} />
             </button>
             <div className="avatar">PA</div>
@@ -571,7 +992,7 @@ export default function Dashboard() {
               </div>
               <h1>
                 {tab === "overview" ? "Mission control" : t[tab]}
-                <span className="text-[#7c5cff]">.</span>
+                <span className="text-[var(--violet)]">.</span>
               </h1>
               <p>
                 {tab === "overview"
@@ -703,44 +1124,45 @@ export default function Dashboard() {
                               >
                                 <stop
                                   offset="0%"
-                                  stopColor="#7c5cff"
-                                  stopOpacity={0.3}
+                                  stopColor="var(--violet)"
+                                  stopOpacity={0.32}
                                 />
                                 <stop
                                   offset="100%"
-                                  stopColor="#7c5cff"
+                                  stopColor="var(--violet)"
                                   stopOpacity={0}
                                 />
                               </linearGradient>
                             </defs>
                             <CartesianGrid
-                              stroke="#ffffff06"
+                              stroke="var(--border)"
                               vertical={false}
                             />
                             <XAxis
                               dataKey="time"
-                              tick={{ fill: "#575c72", fontSize: 9 }}
+                              tick={{ fill: "var(--text-dim)", fontSize: 9 }}
                               tickLine={false}
                               axisLine={false}
                               interval={2}
                             />
                             <YAxis
-                              tick={{ fill: "#575c72", fontSize: 9 }}
+                              tick={{ fill: "var(--text-dim)", fontSize: 9 }}
                               tickLine={false}
                               axisLine={false}
                             />
                             <Tooltip
                               contentStyle={{
-                                background: "#161324",
-                                border: "1px solid #7c5cff33",
+                                background: "var(--bg-elev)",
+                                border: "1px solid var(--border-3)",
                                 borderRadius: 8,
                                 fontSize: 11,
+                                color: "var(--text)",
                               }}
                             />
                             <Area
                               dataKey="tokens"
                               type="monotone"
-                              stroke="#9879ff"
+                              stroke="var(--violet-2)"
                               strokeWidth={2}
                               fill="url(#purple)"
                             />
@@ -757,52 +1179,7 @@ export default function Dashboard() {
                           <span className="status-dot !w-1 !h-1" /> LIVE FLOW
                         </small>
                       </div>
-                      <div className="diagram">
-                        <div className="connector">
-                          <motion.i
-                            className="packet"
-                            animate={{
-                              left: ["0%", "100%"],
-                              opacity: [0, 1, 0],
-                            }}
-                            transition={{ duration: 3, repeat: Infinity }}
-                          />
-                        </div>
-                        {[
-                          [Send, "Telegram"],
-                          [Command, "Pansa Core"],
-                          [Layers, "Provider"],
-                          [Wrench, "Tools"],
-                        ].map(([Icon, label]) => {
-                          const I = Icon as typeof Activity;
-                          return (
-                            <div className="node" key={String(label)}>
-                              <motion.div
-                                className="node-icon"
-                                animate={
-                                  label === "Pansa Core" &&
-                                  Number(stats.running) > 0
-                                    ? {
-                                        boxShadow: [
-                                          "0 0 5px #00e5c320",
-                                          "0 0 30px #00e5c340",
-                                          "0 0 5px #00e5c320",
-                                        ],
-                                      }
-                                    : undefined
-                                }
-                                transition={{ repeat: Infinity, duration: 2 }}
-                              >
-                                <I size={label === "Pansa Core" ? 25 : 19} />
-                              </motion.div>
-                              <span>{String(label)}</span>
-                            </div>
-                          );
-                        })}
-                        <span className="diagram-label">
-                          Telegram → Core → Provider → Tools
-                        </span>
-                      </div>
+                      <FlowDiagram active={Number(stats.running) > 0} />
                     </section>
                   </div>
                   <div className="row">
@@ -813,7 +1190,7 @@ export default function Dashboard() {
                           <span className="badge ml-2">LIVE</span>
                         </h2>
                         <button
-                          className="text-[10px] text-[#9690b2] flex gap-2 items-center"
+                          className="text-[10px] text-[var(--text-2)] flex gap-2 items-center"
                           onClick={() => setTab("live")}
                         >
                           Lihat semua <ArrowUpRight size={12} />
@@ -827,7 +1204,7 @@ export default function Dashboard() {
                           <Layers size={14} /> Provider network
                         </h2>
                         <button
-                          className="text-[10px] text-[#9690b2]"
+                          className="text-[10px] text-[var(--text-2)]"
                           onClick={() => setTab("providers")}
                         >
                           Kelola <ArrowUpRight size={12} className="inline" />
@@ -843,7 +1220,7 @@ export default function Dashboard() {
                               <h3>
                                 {String(p.name)}{" "}
                                 {i === 0 && (
-                                  <span className="text-[8px] text-[#a58dff] ml-2">
+                                  <span className="text-[8px] text-[var(--violet-2)] ml-2">
                                     PRIMARY
                                   </span>
                                 )}
@@ -858,7 +1235,7 @@ export default function Dashboard() {
                                     ? "ready"
                                     : "off"}
                               </span>
-                              <p className="text-[9px] text-[#656a7e] mt-2 font-mono">
+                              <p className="text-[9px] text-[var(--text-dim)] mt-2 font-mono">
                                 {Math.round(Number(p.latency))} ms
                               </p>
                             </div>
@@ -876,9 +1253,9 @@ export default function Dashboard() {
                           </button>
                         </div>
                       )}
-                      <div className="px-5 py-4 flex justify-between text-[9px] font-mono text-[#62677c]">
+                      <div className="px-5 py-4 flex justify-between text-[9px] font-mono text-[var(--text-dim)]">
                         <span>PRIORITY-BASED FAILOVER</span>
-                        <Shield size={12} className="text-[#00e5c3]" />
+                        <Shield size={12} className="text-[var(--cyan)]" />
                       </div>
                     </section>
                   </div>
@@ -891,7 +1268,7 @@ export default function Dashboard() {
                         <p className="text-xs">
                           Bounty berikutnya, hasil berikutnya.
                         </p>
-                        <p className="text-[10px] text-[#676b80] mt-1">
+                        <p className="text-[10px] text-[var(--text-dim)] mt-1">
                           Dari brief make.fun sampai paket submit, dalam satu
                           alur.
                         </p>
@@ -1053,14 +1430,15 @@ export default function Dashboard() {
                 </>
               )}
               {tab === "chat" && (
-                <section className="panel generic">
-                  <div className="toolbar">
+                <section className="panel generic chat-panel">
+                  <div className="toolbar chat-toolbar">
                     <select
                       aria-label="Session"
                       value={session}
                       onChange={(e) => {
                         setSession(e.target.value);
                         setStream("");
+                        setStick(true);
                       }}
                     >
                       <option value="">Session baru</option>
@@ -1070,59 +1448,234 @@ export default function Dashboard() {
                         </option>
                       ))}
                     </select>
-                    {session && (
+                    <div className="seg" role="tablist" aria-label="Mode tampilan">
                       <button
-                        className="btn danger"
-                        onClick={() =>
-                          void action(
-                            () => api(`sessions/${session}/stop`, {}),
-                            "Stop dikirim",
-                          )
-                        }
+                        role="tab"
+                        aria-selected={view === "chat"}
+                        className={view === "chat" ? "on" : ""}
+                        onClick={() => setView("chat")}
                       >
-                        <Square size={12} /> Stop
+                        <MessageSquare size={12} /> Chat
                       </button>
-                    )}
-                  </div>
-                  <div className="chat-history">
-                    {events
-                      .filter(
-                        (e) => e.session_id === session && e.type === "message",
-                      )
-                      .reverse()
-                      .map((e) => (
-                        <div
-                          key={String(e.id)}
-                          className={`bubble ${data(e).role}`}
+                      <button
+                        role="tab"
+                        aria-selected={view === "console"}
+                        className={view === "console" ? "on" : ""}
+                        onClick={() => setView("console")}
+                      >
+                        <Terminal size={12} /> Console
+                      </button>
+                    </div>
+                    <span className={`ws ${connected ? "on" : "off"}`}>
+                      <span className="status-dot !w-1 !h-1" />
+                      {connected ? "LIVE" : "offline"}
+                    </span>
+                    <span className="chat-provider" title="Provider aktif">
+                      <Layers size={11} /> {activeProvider}
+                    </span>
+                    <div className="chat-actions">
+                      <button
+                        className="icon-btn"
+                        aria-label="Salin transkrip"
+                        title="Salin transkrip"
+                        disabled={!transcript}
+                        onClick={() => void copy(transcript, "Transkrip disalin")}
+                      >
+                        <Copy size={13} />
+                      </button>
+                      <button
+                        className="icon-btn"
+                        aria-label="Unduh transkrip"
+                        title="Unduh transkrip (.md)"
+                        disabled={!transcript}
+                        onClick={download}
+                      >
+                        <Download size={13} />
+                      </button>
+                      {session && (
+                        <button
+                          className="btn danger"
+                          disabled={busy}
+                          onClick={() =>
+                            void action(async () => {
+                              const r = (await api(
+                                `sessions/${session}/stop`,
+                                {},
+                              )) as { status?: string };
+                              notify(
+                                r?.status === "idle"
+                                  ? "Tidak ada task berjalan"
+                                  : "Task dihentikan",
+                              );
+                              setStream("");
+                            }, null)
+                          }
                         >
-                          <span className="text-[9px] uppercase text-[#a58dff]">
-                            {String(data(e).role)}
-                          </span>
-                          <p>{String(data(e).content ?? "Tool call")}</p>
-                        </div>
-                      ))}
-                    {stream && (
-                      <div className="bubble">
-                        <span className="text-[#00e5c3] text-xs">
-                          ● Streaming
+                          <Square size={12} /> Stop
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {bountySteps.length > 0 && (
+                    <div className="bounty-steps">
+                      <span className="bounty-steps-title">
+                        <ListChecks size={12} /> Progres bounty
+                      </span>
+                      {bountySteps.map((s) => (
+                        <span
+                          key={s.key}
+                          className={`step ${s.status === "done" ? "done" : s.status === "error" ? "bad" : "run"}`}
+                        >
+                          {s.status === "done" ? (
+                            <Check size={10} />
+                          ) : s.status === "error" ? (
+                            <X size={10} />
+                          ) : (
+                            <RefreshCw size={10} className="spin" />
+                          )}
+                          {s.name}
                         </span>
-                        <p>{stream}</p>
-                      </div>
-                    )}
-                    {!session && (
-                      <div className="empty">
-                        <Bot size={32} />
-                        <p>Brief masuk. Agent bergerak.</p>
-                        <p className="mt-2 text-[10px]">
-                          Tulis task atau tempel brief bounty untuk memulai.
-                        </p>
-                      </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="chat-shell">
+                    <div
+                      className={`chat-history ${view === "console" ? "console" : ""}`}
+                      ref={historyRef}
+                      onScroll={onScroll}
+                      aria-live="polite"
+                    >
+                      {!session && (
+                        <div className="empty">
+                          <Bot size={32} />
+                          <p>Brief masuk. Agent bergerak.</p>
+                          <p className="mt-2 text-[10px]">
+                            Tulis task atau tempel brief bounty untuk memulai.
+                          </p>
+                        </div>
+                      )}
+                      {session && !timeline.length && !stream && (
+                        <div className="empty">
+                          <MessageSquare size={26} />
+                          <p>Belum ada percakapan di sesi ini.</p>
+                        </div>
+                      )}
+                      {view === "chat"
+                        ? timeline.map((i) => {
+                            const d = data(i.e);
+                            if (i.type === "message") {
+                              const text = String(d.content ?? "").trim();
+                              if (!text) return null;
+                              return (
+                                <div
+                                  key={i.key}
+                                  className={`bubble ${String(d.role ?? "")}`}
+                                >
+                                  <span className="bubble-role">
+                                    {String(d.role ?? "agent")}
+                                  </span>
+                                  <Rich text={text} />
+                                </div>
+                              );
+                            }
+                            if (i.type === "tool")
+                              return (
+                                <ActionBlock
+                                  key={i.key}
+                                  e={i.e}
+                                  onOpen={() => setView("console")}
+                                />
+                              );
+                            if (i.type === "switch")
+                              return (
+                                <div className="notice-row" key={i.key}>
+                                  <RefreshCw size={11} /> Provider berpindah:{" "}
+                                  {String(
+                                    d.reason ??
+                                      `${String(d.fromName ?? d.from ?? "")} → ${String(d.toName ?? d.to ?? "")}`,
+                                  )}
+                                </div>
+                              );
+                            if (i.type === "error")
+                              return (
+                                <div className="notice-row bad" key={i.key}>
+                                  <Shield size={11} />{" "}
+                                  {String(d.error ?? "Terjadi kesalahan")}
+                                </div>
+                              );
+                            if (i.type === "task")
+                              return (
+                                <div
+                                  className={`notice-row task ${String(d.status ?? "")}`}
+                                  key={i.key}
+                                >
+                                  <Activity size={11} /> Task{" "}
+                                  {String(d.status ?? "")}
+                                  {d.cost !== undefined &&
+                                    ` · $${Number(d.cost).toFixed(4)}`}
+                                  {d.error ? ` · ${String(d.error)}` : ""}
+                                </div>
+                              );
+                            return null;
+                          })
+                        : timeline.map((i) => {
+                            const d = data(i.e);
+                            const stamp = new Date(
+                              String(i.e.created_at ?? Date.now()),
+                            ).toLocaleTimeString("id-ID", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            });
+                            let line = "";
+                            let cls = "";
+                            if (i.type === "tool") {
+                              const ok = d.status === "done";
+                              const bad = d.status === "error";
+                              cls = bad ? "bad" : ok ? "ok" : "run";
+                              line = `$ ${String(d.command ?? d.content ?? d.tool ?? d.name)}\n${String(d.output ?? d.tail ?? d.error ?? "").slice(-2000)}`;
+                              if (d.durationMs !== undefined)
+                                line += `\n(${Number(d.durationMs)} ms${d.exitCode !== undefined ? ` · exit ${String(d.exitCode)}` : ""})`;
+                            } else if (i.type === "message") {
+                              cls = String(d.role ?? "");
+                              line = `${String(d.role) === "user" ? "»" : "«"} ${String(d.content ?? "")}`;
+                            } else if (i.type === "switch") {
+                              line = `~ provider: ${String(d.reason ?? "")}`;
+                            } else if (i.type === "error") {
+                              cls = "bad";
+                              line = `! ${String(d.error ?? "")}`;
+                            } else if (i.type === "task") {
+                              line = `# task ${String(d.status ?? "")}${d.error ? ` · ${String(d.error)}` : ""}`;
+                            }
+                            if (!line) return null;
+                            return (
+                              <div className={`console-line ${cls}`} key={i.key}>
+                                <span className="console-time">{stamp}</span>
+                                <pre>{line}</pre>
+                              </div>
+                            );
+                          })}
+                      {stream && (
+                        <div className="bubble streaming">
+                          <span className="bubble-role">streaming</span>
+                          <pre className="stream-text">{stream}</pre>
+                        </div>
+                      )}
+                    </div>
+                    {!stick && (
+                      <button
+                        className="chat-jump"
+                        onClick={jump}
+                        aria-label="Ke pesan terbaru"
+                      >
+                        <ArrowDown size={13} /> Terbaru
+                      </button>
                     )}
                   </div>
                   {approvals
                     .filter((a) => a.session_id === session)
                     .map((a) => (
-                      <div key={String(a.id)} className="bubble mb-4">
+                      <div key={String(a.id)} className="bubble approval mb-4">
                         <p>Approval: {String(a.tool)}</p>
                         <pre className="text-xs my-3">{String(a.args)}</pre>
                         <button
@@ -1159,6 +1712,12 @@ export default function Dashboard() {
                       placeholder="Apa yang ingin kamu bangun hari ini?"
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          void send();
+                        }
+                      }}
                     />
                     <button
                       className="btn primary h-11"
@@ -1575,7 +2134,7 @@ export default function Dashboard() {
                           void action(async () => {
                             await api(`memory/${m.id}`, undefined, "DELETE");
                             setItems(items.filter((i) => i.id !== m.id));
-                          })
+                          }, "Memori dihapus")
                         }
                       >
                         <Trash2 size={13} />
@@ -1634,7 +2193,7 @@ export default function Dashboard() {
                             <div key={String(b.id)} className="bounty-card">
                               <Trophy
                                 size={13}
-                                className="text-[#aa92ff] mb-3"
+                                className="text-[var(--violet-2)] mb-3"
                               />
                               <p>{String(b.title)}</p>
                               <p className="muted text-[9px] mt-3">
@@ -1845,7 +2404,7 @@ export default function Dashboard() {
             exit={{ opacity: 0, y: 10 }}
             className="toast"
           >
-            <Check size={14} className="inline text-[#00e5c3] mr-2" />
+            <Check size={14} className="inline text-[var(--cyan)] mr-2" />
             {notice}
           </motion.div>
         )}

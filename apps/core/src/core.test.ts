@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { encrypt, decrypt, safePath, redact, checkURL } from "./security.js";
 import { Store } from "./store.js";
-import { Providers, quality, cooldown, type Message } from "./providers.js";
-const key = "a".repeat(64);
+import { Providers, quality, cooldown, type Message } from "./providers.js";const key = "a".repeat(64);
 afterEach(() => vi.restoreAllMocks());
 describe("encryption", () => {
   it("uses unique nonces and rejects tampering/wrong key", () => {
@@ -63,8 +62,7 @@ describe("memory", () => {
     db.db.close();
   });
 });
-describe("provider manager", () => {
-  it("rejects empty/refusal/repetitive/malformed responses", () => {
+describe("provider manager", () => {  it("rejects empty/refusal/repetitive/malformed responses", () => {
     expect(quality("", [], [])).toBe(0);
     expect(quality("Sorry, I cannot help.", [], [])).toBeLessThan(0.5);
     expect(
@@ -134,6 +132,35 @@ describe("provider manager", () => {
     expect(db.get("SELECT COUNT(*) n FROM events WHERE type='switch'")?.n).toBe(
       1,
     );
+    db.db.close();
+  });
+});
+describe("agent stop", () => {
+  it("reports idle without inventing events and reaps a stale running task", async () => {
+    Object.assign(process.env, {
+      MASTER_KEY: key,
+      DASH_TOKEN: "test-dash-token-0123456789abcdef",
+      DATA_DIR: "/tmp/pansa-stop-test",
+      WORKSPACE_DIR: "/tmp/pansa-stop-test",
+    });
+    const { Agent } = await import("./agent.js");
+    const db = new Store(":memory:");
+    const providers = new Providers(db, key);
+    const tools = {
+      pending: new Map<string, (ok: boolean) => void>(),
+      sandbox: { kill: async () => 0 },
+    } as unknown as ConstructorParameters<typeof Agent>[2];
+    const agent = new Agent(db, providers, tools);
+    const session = String(db.session("stop test").id);
+    expect(agent.stopOrReap(session)).toBe("idle");
+    expect(db.get("SELECT COUNT(*) n FROM events WHERE type='task'")?.n).toBe(0);
+    db.event("task", session, { status: "running", prompt: "x" });
+    expect(agent.stopOrReap(session)).toBe("reaped");
+    const last = db.get(
+      "SELECT data FROM events WHERE session_id=? AND type='task' ORDER BY id DESC LIMIT 1",
+      session,
+    );
+    expect(JSON.parse(String(last?.data)).status).toBe("stopped");
     db.db.close();
   });
 });

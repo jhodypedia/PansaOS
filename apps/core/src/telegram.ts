@@ -39,6 +39,18 @@ export async function startTelegram(d: Deps) {
     return ctx.from.id;
   };
   const wizard = new Map<number, string[]>();
+  const providerName = (id: unknown) =>
+    String(
+      d.providers
+        .list()
+        .find((p) => p.id === String(id))?.name ?? "provider",
+    );
+  const sessionLabel = async (ctx: Context) => {
+    const s = await session(ctx);
+    const all = d.store.all("SELECT id FROM sessions ORDER BY rowid");
+    const index = all.findIndex((x) => String(x.id) === String(s.id));
+    return { s, label: `Sesi #${index + 1}` };
+  };
   d.tools.send = async (text, file) => {
     for (const id of config.admins) {
       if (file)
@@ -65,12 +77,13 @@ export async function startTelegram(d: Deps) {
           )
           .catch(() => {});
     }
-    if (e.type === "switch")
+    if (e.type === "switch") {
+      const from = e.data.fromName ?? providerName(e.data.from);
+      const to = e.data.toName ?? providerName(e.data.to);
       void d.tools
-        .send(
-          `🔀 Provider switch: ${e.data.from} → ${e.data.to}\n${e.data.reason}`,
-        )
+        .send(`🔀 Provider switch: ${String(from)} → ${String(to)}\n${e.data.reason}`)
         .catch(() => {});
+    }
   });
   const session = async (ctx: Context) =>
     d.store.session(
@@ -83,31 +96,63 @@ export async function startTelegram(d: Deps) {
     const old = await session(ctx);
     d.agent.stop(String(old.id));
     d.store.run("UPDATE sessions SET chat_id=NULL WHERE id=?", String(old.id));
-    const s = d.store.session("Telegram session", ctx.chat?.id ?? null);
-    await ctx.reply(`Session siap: ${s.id}`);
+    d.store.session("Telegram session", ctx.chat?.id ?? null);
+    await ctx.reply(`Sesi baru siap. Riwayat sebelumnya tetap tersimpan.`);
   });
   bot.command("stop", async (ctx) => {
     const s = await session(ctx);
-    d.agent.stop(String(s.id));
-    await ctx.reply("Task dihentikan.");
-  });
-  bot.command("status", async (ctx) => {
-    const s = await session(ctx);
+    const result = d.agent.stopOrReap(String(s.id));
     await ctx.reply(
-      `Session: ${s.id}\nRunning: ${d.agent.running.has(String(s.id)) ? "ya" : "tidak"}\nProvider: ${d.providers.list().length}`,
+      result === "idle"
+        ? "Tidak ada task yang berjalan."
+        : "Task dihentikan.",
     );
   });
-  bot.command("providers", (ctx) =>
-    ctx.reply(
-      d.providers
-        .list()
-        .map(
-          (p) =>
-            `${p.id}\n${p.name} · ${p.model} · ${p.enabled ? "aktif" : "off"} · ${p.api_key}`,
+  bot.command("status", async (ctx) => {
+    const { s, label } = await sessionLabel(ctx);
+    const active = d.providers
+      .list()
+      .filter((p) => p.enabled)
+      .map((p) => p.name);
+    await ctx.reply(
+      `${label}\nStatus: ${d.agent.running.has(String(s.id)) ? "bekerja" : "menganggur"}\nProvider aktif: ${active.join(", ") || "belum ada"}`,
+    );
+  });
+  const providerKeyboard = (pinned?: unknown) => {
+    const list = d.providers.list();
+    const keyboard = new InlineKeyboard();
+    list.forEach((p, i) => {
+      const mark = String(p.id) === String(pinned) ? "✅" : "📌";
+      keyboard
+        .text(
+          `${mark} ${i + 1}. ${String(p.name).slice(0, 22)}`,
+          `provider:pin:${p.id}`,
         )
-        .join("\n") || "Belum ada provider.",
-    ),
-  );
+        .row()
+        .text("🧪 Tes", `provider:test:${p.id}`)
+        .text(p.enabled ? "⏸ Nonaktifkan" : "▶ Aktifkan", `provider:toggle:${p.id}`)
+        .text("🗑", `provider:del:${p.id}`)
+        .row();
+    });
+    return keyboard;
+  };
+  const providerList = async (ctx: Context) => {
+    const s = await session(ctx);
+    const list = d.providers.list();
+    if (!list.length)
+      return ctx.reply(
+        "Belum ada provider. Tambahkan dengan /addprovider atau wizard.",
+      );
+    const lines = list.map((p, i) => {
+      const mark = String(p.id) === String(s.pinned) ? "✅" : "▫️";
+      return `${mark} ${i + 1}. ${p.name} · ${p.model} · ${p.enabled ? "aktif" : "off"} · ${p.api_key}`;
+    });
+    return ctx.reply(
+      `Provider (ketuk untuk memilih):\n${lines.join("\n")}`,
+      { reply_markup: providerKeyboard(s.pinned) },
+    );
+  };
+  bot.command("providers", providerList);
   bot.command("addprovider", async (ctx) => {
     const parts = ctx.match.split("|");
     if (parts.length !== 4) {
@@ -133,7 +178,7 @@ export async function startTelegram(d: Deps) {
         model: parts[3],
         priority: 0,
       });
-      await ctx.reply(`Provider tersimpan (${id}). Tes koneksi...`);
+      await ctx.reply(`Provider ${parts[0]} tersimpan. Tes koneksi...`);
       const test = await d.providers.test(id);
       await ctx.reply(`Koneksi berhasil, latency ${test.latency}ms.`);
     } catch (e) {
@@ -142,13 +187,22 @@ export async function startTelegram(d: Deps) {
   });
   bot.command("model", async (ctx) => {
     const s = await session(ctx);
+    const query = ctx.match.trim();
+    if (!query) {
+      await ctx.reply("Pilih provider yang ingin dikunci:", {
+        reply_markup: providerKeyboard(s.pinned),
+      });
+      return;
+    }
     const p = d.providers
       .list()
-      .find((x) => x.id === ctx.match || x.model === ctx.match);
+      .find((x) => x.id === query || x.model === query);
     if (!p)
       return ctx.reply("Provider/model tidak ditemukan. Gunakan /providers");
     d.store.run("UPDATE sessions SET pinned=? WHERE id=?", String(p.id), s.id);
-    return ctx.reply(`Model dikunci: ${p.model}. Fallback tetap tersedia.`);
+    return ctx.reply(
+      `Model dikunci: ${p.name} · ${p.model}. Fallback tetap tersedia.`,
+    );
   });
   bot.command("skills", async (ctx) =>
     ctx.reply(
@@ -172,7 +226,7 @@ export async function startTelegram(d: Deps) {
         .all(
           "SELECT id,title,status,deadline FROM bounties ORDER BY created_at DESC",
         )
-        .map((b) => `${String(b.id).slice(0, 8)} · ${b.title} · ${b.status}`)
+        .map((b, i) => `${i + 1}. ${b.title} · ${b.status}`)
         .join("\n") || "Belum ada bounty.",
     ),
   );
@@ -384,30 +438,62 @@ export async function startTelegram(d: Deps) {
     const s = await session(ctx);
     if (d.agent.running.has(String(s.id)))
       return ctx.reply("Task masih berjalan. Gunakan /stop atau /new.");
+    const stop = () =>
+      new InlineKeyboard().text("⛔ Stop", `stop:${s.id}`);
     const wait = await ctx.reply("⏳ Agent berpikir…", {
-      reply_markup: new InlineKeyboard().text("⛔ Stop", `stop:${s.id}`),
+      reply_markup: stop(),
     });
+    const typing = () =>
+      void ctx.api.sendChatAction(ctx.chat.id, "typing").catch(() => {});
+    typing();
+    const typingTimer = setInterval(typing, 4000);
     let text = "",
-      last = 0;
+      last = 0,
+      current = "",
+      busy = false;
+    const steps: string[] = [];
+    const render = () => {
+      const body = [steps.slice(-4).join("\n"), current, text.trim()]
+        .filter(Boolean)
+        .join("\n\n");
+      return body.slice(-3900) || "⏳ Agent berpikir…";
+    };
+    const flush = () => {
+      if (busy) return;
+      busy = true;
+      last = Date.now();
+      void ctx.api
+        .editMessageText(ctx.chat.id, wait.message_id, render(), {
+          reply_markup: stop(),
+        })
+        .catch(() => {})
+        .finally(() => (busy = false));
+    };
     const listener = (e: LiveEvent) => {
-      if (e.session_id !== s.id || e.type !== "token") return;
-      text += String(e.data.text ?? "");
-      if (Date.now() - last > 1100) {
-        last = Date.now();
-        void ctx.api
-          .editMessageText(
-            ctx.chat.id,
-            wait.message_id,
-            text.slice(-3900) || "⏳ Agent berpikir…",
-            {
-              reply_markup: new InlineKeyboard().text(
-                "⛔ Stop",
-                `stop:${s.id}`,
-              ),
-            },
-          )
-          .catch(() => {});
-      }
+      if (e.session_id !== s.id) return;
+      if (e.type === "token") text += String(e.data.text ?? "");
+      else if (e.type === "tool") {
+        const cmd = e.data.command
+          ? `$ ${String(e.data.command).slice(0, 120)}`
+          : String(e.data.name);
+        if (e.data.status === "running") current = `💻 ${cmd}`;
+        else {
+          const secs = Number(e.data.durationMs ?? 0);
+          const exit = e.data.exitCode;
+          steps.push(
+            [
+              e.data.status === "done" ? "✓" : "✗",
+              cmd,
+              secs >= 1000 ? `(${Math.round(secs / 1000)} dtk)` : "",
+              exit === undefined || exit === null ? "" : `exit ${String(exit)}`,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          );
+          current = "";
+        }
+      } else return;
+      if (Date.now() - last > 1100) flush();
     };
     d.store.bus.on("event", listener);
     void d.agent
@@ -422,11 +508,88 @@ export async function startTelegram(d: Deps) {
       .catch((e) =>
         ctx.reply(`Gagal: ${e instanceof Error ? e.message : "error"}`),
       )
-      .finally(() => d.store.bus.off("event", listener));
+      .finally(() => {
+        clearInterval(typingTimer);
+        d.store.bus.off("event", listener);
+      });
+  });
+  bot.callbackQuery(/^provider:/, async (ctx) => {
+    const [, action, id] = ctx.callbackQuery.data.split(":");
+    if (action === "noop") return ctx.answerCallbackQuery();
+    const provider = d.providers.list().find((p) => String(p.id) === id);
+    if (!provider) return ctx.answerCallbackQuery("Provider tidak ditemukan");
+    const name = String(provider.name);
+    if (action === "pin") {
+      const s = await session(ctx);
+      d.store.run(
+        "UPDATE sessions SET pinned=? WHERE id=?",
+        String(provider.id),
+        s.id,
+      );
+      await ctx.answerCallbackQuery(`Dikunci ke ${name}`);
+      return ctx.editMessageReplyMarkup({
+        reply_markup: providerKeyboard(provider.id),
+      });
+    }
+    if (action === "test") {
+      await ctx.answerCallbackQuery(`Menguji ${name}…`);
+      try {
+        const r = await d.providers.test(String(provider.id));
+        return ctx.reply(
+          r.ok ? `✅ ${name} responsif (${r.latency} ms)` : `⚠️ ${name} gagal`,
+        );
+      } catch (e) {
+        return ctx.reply(
+          `❌ ${name} gagal: ${e instanceof Error ? e.message : "error"}`,
+        );
+      }
+    }
+    if (action === "toggle") {
+      d.store.run(
+        "UPDATE providers SET enabled=1-enabled WHERE id=?",
+        String(provider.id),
+      );
+      const now = d.providers
+        .list()
+        .find((p) => String(p.id) === id);
+      await ctx.answerCallbackQuery(
+        now?.enabled ? `${name} diaktifkan` : `${name} dinonaktifkan`,
+      );
+      return ctx.editMessageReplyMarkup({
+        reply_markup: providerKeyboard(
+          (await session(ctx)).pinned,
+        ),
+      });
+    }
+    if (action === "del") {
+      await ctx.answerCallbackQuery();
+      return ctx.editMessageReplyMarkup({
+        reply_markup: new InlineKeyboard()
+          .text(`🗑 Hapus ${name}?`, "provider:noop")
+          .row()
+          .text("Ya, hapus", `provider:delyes:${provider.id}`)
+          .text("Batal", `provider:delno:${provider.id}`),
+      });
+    }
+    if (action === "delyes") {
+      d.store.run("DELETE FROM providers WHERE id=?", String(provider.id));
+      d.providers.refreshSecrets();
+      await ctx.answerCallbackQuery(`${name} dihapus`);
+      return ctx.editMessageText(`🗑 Provider ${name} dihapus.`);
+    }
+    if (action === "delno") {
+      await ctx.answerCallbackQuery("Dibatalkan");
+      return ctx.editMessageReplyMarkup({
+        reply_markup: providerKeyboard((await session(ctx)).pinned),
+      });
+    }
+    return ctx.answerCallbackQuery();
   });
   bot.callbackQuery(/^stop:/, async (ctx) => {
-    d.agent.stop(ctx.callbackQuery.data.slice(5));
-    await ctx.answerCallbackQuery("Task dihentikan");
+    const result = d.agent.stopOrReap(ctx.callbackQuery.data.slice(5));
+    await ctx.answerCallbackQuery(
+      result === "idle" ? "Tidak ada task berjalan" : "Task dihentikan",
+    );
   });
   bot.catch((err) =>
     d.store.event("error", null, { error: String(err.error) }),

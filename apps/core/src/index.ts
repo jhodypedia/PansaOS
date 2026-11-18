@@ -19,6 +19,7 @@ import { hash } from "./security.js";
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { routes } from "./routes.js";
+import { tolerantJsonBody } from "./body.js";
 import chokidar from "chokidar";
 import { z } from "zod";
 
@@ -41,6 +42,7 @@ const app = Fastify({
   },
 });
 await app.register(helmet, { contentSecurityPolicy: false });
+tolerantJsonBody(app);
 await app.register(cookie);
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 await app.register(cors, { origin: [config.PUBLIC_URL], credentials: true });
@@ -231,9 +233,11 @@ app.post("/api/sessions/:id/message", async (req, reply) => {
   );
   return { accepted: true };
 });
-app.post("/api/sessions/:id/stop", async (req) => {
-  agent.stop((req.params as { id: string }).id);
-  return { ok: true };
+app.post("/api/sessions/:id/stop", async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  if (!store.get("SELECT id FROM sessions WHERE id=?", id))
+    return reply.code(404).send({ error: "Session tidak ditemukan" });
+  return { ok: true, status: agent.stopOrReap(id) };
 });
 app.get("/api/approvals", async () =>
   store.all(

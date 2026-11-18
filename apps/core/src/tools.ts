@@ -69,6 +69,14 @@ export class Tools {
         },
       }));
   }
+  async runShell(
+    session: string,
+    command: string,
+    ctx: ToolContext,
+    timeout = 60000,
+  ): Promise<string> {
+    return this.sandbox.run(session, command, ctx.signal, timeout);
+  }
   async approval(
     name: string,
     args: Record<string, unknown>,
@@ -131,18 +139,69 @@ export class Tools {
       )
     )
       await this.approval(name, args, ctx);
-    this.store.event("tool", ctx.session, { name, args, status: "running" });
+    const command =
+      typeof args.command === "string" ? args.command.slice(0, 300) : undefined;
+    const file = typeof args.path === "string" ? args.path.slice(0, 300) : undefined;
+    const lines =
+      typeof args.content === "string"
+        ? args.content.split("\n").length
+        : typeof args.replacement === "string"
+          ? args.replacement.split("\n").length
+          : undefined;
+    this.store.event("tool", ctx.session, {
+      tool: name,
+      name,
+      args,
+      command,
+      content: command ?? (file ? `${name} ${file}` : name),
+      file,
+      lines,
+      status: "running",
+    });
+    const started = Date.now();
     try {
       const result = await tool.run(args, ctx);
       const raw = typeof result === "string" ? result : JSON.stringify(result);
       const output =
         raw.slice(0, config.TOOL_OUTPUT_LIMIT) +
         (raw.length > config.TOOL_OUTPUT_LIMIT ? "\n[output dipotong]" : "");
-      this.store.event("tool", ctx.session, { name, status: "done", output });
+      const exitCode =
+        name === "bash" || command
+          ? Number(/^exit=(-?\d+)/.exec(raw)?.[1] ?? 0)
+          : undefined;
+      this.store.event("tool", ctx.session, {
+        tool: name,
+        name,
+        args,
+        command,
+        content: command ?? (file ? `${name} ${file}` : name),
+        file,
+        lines,
+        status: exitCode === 0 || exitCode === undefined ? "done" : "error",
+        exitCode,
+        durationMs: Date.now() - started,
+        output: output.slice(0, config.TOOL_OUTPUT_LIMIT),
+        tail: raw
+          .replace(/^exit=-?\d+\n?/, "")
+          .trim()
+          .slice(-400),
+      });
       return output;
     } catch (e) {
       const error = e instanceof Error ? e.message : "Tool gagal";
-      this.store.event("tool", ctx.session, { name, status: "error", error });
+      this.store.event("tool", ctx.session, {
+        tool: name,
+        name,
+        args,
+        command,
+        content: command ?? (file ? `${name} ${file}` : name),
+        file,
+        lines,
+        status: "error",
+        durationMs: Date.now() - started,
+        output: error,
+        error,
+      });
       throw e;
     }
   }
@@ -169,10 +228,10 @@ export class Tools {
     const resolve = async (c: ToolContext, p: unknown) =>
       safePath(await this.sandbox.root(c.session), String(p));
     const shell = async (a: Record<string, unknown>, c: ToolContext) =>
-      this.sandbox.run(
+      this.runShell(
         c.session,
         String(a.command),
-        c.signal,
+        c,
         Number(a.timeout ?? 60000),
       );
     add(

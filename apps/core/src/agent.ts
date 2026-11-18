@@ -4,6 +4,7 @@ import { Store } from "./store.js";
 import { Providers, type Message } from "./providers.js";
 import { Tools } from "./tools.js";
 
+export const STOP_REASON = "Dihentikan admin";
 export class Agent {
   running = new Map<string, AbortController>();
   constructor(
@@ -25,8 +26,38 @@ export class Agent {
       };
     };
   }
-  stop(session: string) {
-    this.running.get(session)?.abort(new Error("Dihentikan admin"));
+  stop(session: string): boolean {
+    const controller = this.running.get(session);
+    if (!controller) return false;
+    for (const [id, resolve] of this.tools.pending) {
+      const row = this.store.get("SELECT session_id FROM approvals WHERE id=?", id);
+      if (String(row?.session_id ?? "") === session) {
+        this.store.run("UPDATE approvals SET status='expired' WHERE id=?", id);
+        this.tools.pending.delete(id);
+        resolve(false);
+      }
+    }
+    controller.abort(new Error(STOP_REASON));
+    void this.tools.sandbox.kill(session).catch(() => {});
+    return true;
+  }
+  stopOrReap(session: string): "stopped" | "reaped" | "idle" {
+    if (this.stop(session)) return "stopped";
+    const last = this.store.get(
+      "SELECT id,data FROM events WHERE session_id=? AND type='task' ORDER BY id DESC LIMIT 1",
+      session,
+    );
+    const status = last
+      ? (JSON.parse(String(last.data)) as { status?: string }).status
+      : undefined;
+    if (status === "running") {
+      this.store.event("task", session, {
+        status: "stopped",
+        error: STOP_REASON,
+      });
+      return "reaped";
+    }
+    return "idle";
   }
   async run(
     session: string,
@@ -59,7 +90,14 @@ export class Agent {
     this.store.event("message", session, { role: "user", content: prompt });
     try {
       let soul =
-        "Kamu PansaOS, agent bounty hunter. Jawab Bahasa Indonesia. Gunakan tool untuk hasil nyata. Jangan mengaku test lulus tanpa menjalankannya. Jangan melakukan transaksi atau submit eksternal tanpa approval.";
+        "Kamu PansaOS, agent bounty hunter. Komunikasi ke owner dalam Bahasa Indonesia kecuali owner meminta English; semua produk kerja bounty dalam Bahasa Inggris. Gunakan tool untuk hasil nyata. Jangan mengaku test lulus tanpa menjalankannya. Jangan melakukan transaksi atau submit eksternal tanpa approval.";
+      soul +=
+        "\n\nATURAN KONEKSI make.fun (WAJIB, berlaku untuk semua permintaan bounty make.fun apa pun nama akun yang disebut):\n" +
+        "1. SEBELUM menjalankan login make.fun ATAU mengirim approval/connect link ke owner, PERIKSA dulu status koneksi yang tersimpan. Pakai kredensial yang ada (mis. ~/.makefun/credentials) untuk memanggil endpoint status akun seperti GET /api/agents/me, atau perintah status CLI yang setara. Pemeriksaan ini gratis dan tidak mengubah apa pun.\n" +
+        "2. Bila SUDAH ADA akun terhubung (respons 2xx dengan identitas akun): JANGAN login lagi, JANGAN kirim approval link baru, JANGAN minta owner login ulang. Langsung kerjakan bounty memakai akun yang sudah terhubung. Tidak ada pengecualian, termasuk untuk 'sekadar memastikan'.\n" +
+        "3. Bila BELUM ada akun terhubung (401, kredensial kosong, atau respons kosong): barulah jalankan login make.fun, kirim approval link ke owner, dan tunggu persetujuan sebelum melanjutkan.\n" +
+        "4. Bila prompt menyebut handle akun yang BERBEDA dari akun yang sedang terhubung: JANGAN diam-diam ganti akun. Berhenti dan tanya owner dulu, karena pindah akun berarti login baru dengan identitas berbeda (memengaruhi kepemilikan submission dan klaim hadiah). Lanjutkan dengan akun yang sudah terhubung hanya bila owner menyetujui.\n" +
+        "5. Jangan pernah hardcode handle akun: selalu baca identitas dari status koneksi saat berjalan, dan jangan pernah mencetak API key utuh.";
       try {
         soul += "\n" + (await fs.readFile(config.SOUL_PATH, "utf8"));
       } catch {}
@@ -138,11 +176,13 @@ export class Agent {
         };
         messages.push(assistant);
         save(assistant);
-        this.store.event("message", session, {
-          role: "assistant",
-          content: reply.text,
-          calls: reply.calls,
-        });
+        const spoken = reply.text.trim();
+        if (spoken || !reply.calls.length)
+          this.store.event("message", session, {
+            role: "assistant",
+            content: spoken ? reply.text : null,
+            ...(reply.calls.length ? { calls: reply.calls } : {}),
+          });
         if (!reply.calls.length) {
           this.store.remember(
             prompt.slice(0, 150),

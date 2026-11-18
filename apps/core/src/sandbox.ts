@@ -43,6 +43,31 @@ export function execute(
   });
 }
 export class Sandbox {
+  async kill(session: string): Promise<number> {
+    if (!/^[a-f0-9-]{36}$/.test(session)) return 0;
+    try {
+      const listed = await execute(
+        "docker",
+        [
+          "ps",
+          "-aq",
+          "--filter",
+          `label=pansa.session=${session}`,
+        ],
+        AbortSignal.timeout(10000),
+      );
+      const ids = listed
+        .replace(/^exit=-?\d+\n?/, "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^[0-9a-f]{12,64}$/.test(line));
+      for (const id of ids)
+        await execute("docker", ["rm", "-f", id], AbortSignal.timeout(15000));
+      return ids.length;
+    } catch {
+      return 0;
+    }
+  }
   async root(session: string) {
     if (!/^[a-f0-9-]{36}$/.test(session)) throw new Error("Session ID invalid");
     const root = path.join(config.workspace, session);
