@@ -101,11 +101,33 @@ input, textarea, select {
   color: inherit;
   outline: none;
   transition: border-color .18s ease, box-shadow .18s ease;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-input:focus, textarea:focus, select:focus {
+input:focus, textarea:focus {
   border-color: var(--violet);
   box-shadow: 0 0 0 3px var(--violet-soft);
+}
+
+/* selects: one focus marker only (border), never border + ring (iOS double frame) */
+select:focus { border-color: var(--violet); box-shadow: none; }
+
+select:focus-visible, input:focus-visible, textarea:focus-visible { outline: none; }
+
+select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 17px) calc(50% + 1px), calc(100% - 12px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 32px;
+}
+
+/* single focus marker: no ring, just a violet border (avoids iOS double frame) */
+.session-trigger:focus, .session-trigger:focus-visible {
+  outline: none;
+  border-color: var(--violet);
+  box-shadow: none;
 }
 
 textarea { resize: vertical; width: 100%; min-height: 120px; }
@@ -579,7 +601,74 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
 
 .chat-panel { display: flex; flex-direction: column; min-height: 0; }
 .chat-toolbar { align-items: center; gap: 10px; margin-bottom: 14px; }
-.chat-toolbar select { max-width: 260px; }
+
+.session-picker { position: relative; display: inline-flex; min-width: 0; max-width: 260px; }
+
+.session-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 10px 12px;
+  background: var(--input);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color .18s ease, background-color .18s ease;
+}
+
+.session-trigger:hover { border-color: var(--border-3); background: var(--hover); }
+.session-trigger .lead { flex: none; color: var(--text-3); }
+.session-trigger .chev { flex: none; margin-left: auto; color: var(--text-3); transition: transform .18s ease; }
+.session-trigger[aria-expanded='true'] .chev { transform: rotate(180deg); }
+.session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.session-menu {
+  position: fixed;
+  z-index: 70;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px #00000059;
+  padding: 5px;
+  animation: rise .14s var(--ease);
+  outline: none;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: left;
+  transition: background-color .14s ease, color .14s ease;
+}
+
+.session-item .session-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--border-3); }
+.session-item.new { color: var(--violet-2); font-weight: 500; }
+.session-item.new svg { flex: none; }
+.session-item.active, .session-item:hover { background: var(--hover); color: var(--text); }
+.session-item.on { color: var(--text); }
+.session-item.on .session-dot { background: var(--violet); }
+.session-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.session-item-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-meta { display: block; font: 9px 'JetBrains Mono', monospace; color: var(--text-dim); }
+.session-check { flex: none; color: var(--violet-2); }
+.session-sep { height: 1px; margin: 5px 6px; background: var(--border-2); }
+.session-empty { padding: 12px 10px; font-size: 11px; color: var(--text-dim); }
+
 .chat-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .chat-provider { display: inline-flex; align-items: center; gap: 6px; font: 9px 'JetBrains Mono', monospace; color: var(--text-2); border: 1px solid var(--border-2); background: var(--hover); padding: 5px 9px; border-radius: 6px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws { display: inline-flex; align-items: center; gap: 6px; font: 9px 'JetBrains Mono', monospace; color: var(--text-dim); }
@@ -739,15 +828,15 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
 }
 
 @media (max-width: 900px) {
-  .sidebar { transform: translateX(-100%); box-shadow: var(--shadow); width: min(280px, 82vw); }
+  .sidebar { transform: translateX(-100%); box-shadow: var(--shadow); width: min(280px, 82vw); padding-left: calc(18px + env(safe-area-inset-left)); }
   .app.nav-open .sidebar { transform: none; }
   .main { margin-left: 0; width: 100%; }
   .icon-btn.menu { display: grid; }
-  .topbar { min-height: 62px; padding: 0 16px; gap: 10px; }
+  .topbar { min-height: 62px; padding: 0 16px; padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); gap: 10px; }
   .breadcrumb { font-size: 10px; }
   .top-actions > span { display: none; }
   .keycap { display: none; }
-  .content { padding: 20px 16px; }
+  .content { padding: 20px 16px; padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); overflow-x: clip; }
   .page-title { flex-direction: column; align-items: stretch; gap: 14px; }
   .title-actions { justify-content: flex-start; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -764,8 +853,14 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
   .stat:last-child { grid-column: span 2; }
   .stat-value { font-size: 21px; }
   .stat-head { font-size: 10px; }
-  .title-actions > .btn:first-child { display: none; }
-  .title-actions .btn { flex: 1; justify-content: center; }
+  .page-title { gap: 10px; margin-bottom: 18px; }
+  .page-title h1 { font-size: 20px; margin-bottom: 4px; }
+  .page-title p { font-size: 11px; line-height: 1.45; }
+  .title-actions { gap: 8px; flex-wrap: nowrap; }
+  .title-actions .btn { flex: 0 0 auto; justify-content: center; min-height: 40px; font-size: 12px; }
+  .title-actions .btn.primary { padding: 10px 14px; }
+  .title-actions .btn.icon-only { width: 40px; padding: 0; }
+  .title-actions .btn.icon-only .label { display: none; }
   .form-grid { grid-template-columns: 1fr; }
   .console-bar { flex-direction: column; align-items: stretch; }
   .console-bar .btn { justify-content: center; }
@@ -778,10 +873,25 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
   .diagram-label { font-size: 8px; bottom: 12px; }
   .chat-history { height: clamp(300px, 62vh, 620px); }
   .chat-provider { display: none; }
-  .chat-toolbar select { max-width: none; flex: 1; }
-  .chat-actions { margin-left: 0; width: 100%; justify-content: flex-end; }
+  .chat-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    row-gap: 10px;
+  }
+  .session-picker { grid-column: 1; grid-row: 1; flex: 1 1 auto; max-width: none; }
+  .session-trigger { min-height: 44px; font-size: 12px; }
+  .session-title { max-width: 100%; }
+  .session-menu { border-radius: 14px; }
+  .session-item { min-height: 44px; }
+  .chat-actions { grid-column: 2; grid-row: 1; margin-left: 0; width: auto; justify-content: flex-end; gap: 6px; }
+  .seg { grid-column: 1; grid-row: 2; justify-self: start; }
+  .seg button { min-height: 40px; padding: 8px 11px; font-size: 10px; }
+  .chat-toolbar .ws { grid-column: 2; grid-row: 2; justify-self: end; }
+  .chat-actions .icon-btn, .chat-actions .btn { min-height: 40px; }
   .action-meta { display: none; }
-  .toast { left: 16px; right: 16px; bottom: 16px; padding: 14px 16px; }
+  .toast { left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); padding: 14px 16px; }
   .bubble { padding: 13px; }
   .list-card { flex-direction: column; align-items: stretch; }
 }

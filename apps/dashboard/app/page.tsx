@@ -1,5 +1,6 @@
 "use client";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   motion,
   AnimatePresence,
@@ -271,6 +272,207 @@ function FlowDiagram({ active }: { active: boolean }) {
       <span className="diagram-label">
         Telegram → Core → Provider → Tools → Telegram
       </span>
+    </div>
+  );
+}
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "Mei",
+  "Jun",
+  "Jul",
+  "Agu",
+  "Sep",
+  "Okt",
+  "Nov",
+  "Des",
+];
+function shorten(text: string, max = 40) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
+}
+function shortDate(raw: string) {
+  const stamp = new Date(`${String(raw).replace(" ", "T")}Z`);
+  if (Number.isNaN(stamp.getTime())) return "";
+  const wib = new Date(stamp.getTime() + 7 * 3600_000);
+  return `${wib.getUTCDate()} ${MONTHS[wib.getUTCMonth()]} ${String(
+    wib.getUTCHours(),
+  ).padStart(2, "0")}:${String(wib.getUTCMinutes()).padStart(2, "0")}`;
+}
+function SessionPicker({
+  sessions,
+  value,
+  onChange,
+}: {
+  sessions: Row[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false),
+    [active, setActive] = useState(0),
+    [pos, setPos] = useState({ top: 0, left: 0, width: 240, max: 320 });
+  const trigger = useRef<HTMLButtonElement>(null),
+    menu = useRef<HTMLDivElement>(null);
+  const options = useMemo(
+    () => [
+      { id: "", label: "Session baru", meta: "", fresh: true },
+      ...sessions.map((s) => ({
+        id: String(s.id),
+        label: shorten(String(s.title ?? "")),
+        meta: shortDate(String(s.created_at ?? "")),
+        fresh: false,
+      })),
+    ],
+    [sessions],
+  );
+  const current = options.find((o) => o.id === value) ?? options[0] ?? {
+    id: "",
+    label: "Session baru",
+    meta: "",
+    fresh: true,
+  };
+  const place = useCallback(() => {
+    const node = trigger.current;
+    if (!node) return;
+    const r = node.getBoundingClientRect(),
+      width = Math.min(Math.max(r.width, 240), window.innerWidth - 32),
+      left = Math.min(Math.max(12, r.left), window.innerWidth - width - 12),
+      room = window.innerHeight - r.bottom - 20;
+    const above = room < 180 && r.top > room;
+    const max = Math.min(320, Math.max(140, above ? r.top - 20 : room));
+    setPos({
+      top: above ? r.top - 6 - max : r.bottom + 6,
+      left,
+      width,
+      max,
+    });
+  }, []);
+  const close = useCallback((focus?: boolean) => {
+    setOpen(false);
+    if (focus) trigger.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    setActive(Math.max(0, options.findIndex((o) => o.id === value)));
+    menu.current?.focus({ preventScroll: true });
+    const outside = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!menu.current?.contains(t) && !trigger.current?.contains(t))
+        setOpen(false);
+    };
+    const resize = () => place();
+    document.addEventListener("mousedown", outside);
+    window.addEventListener("resize", resize);
+    window.addEventListener("scroll", resize, true);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("scroll", resize, true);
+    };
+  }, [open, options, value, place]);
+  const pick = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    onChange(option.id);
+    close(true);
+  };
+  return (
+    <div className="session-picker">
+      <button
+        ref={trigger}
+        type="button"
+        className="session-trigger"
+        aria-label="Session"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => {
+          place();
+          setOpen((v) => !v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            place();
+            setOpen(true);
+          }
+        }}
+      >
+        {current.fresh ? (
+          <Plus size={13} className="lead" />
+        ) : (
+          <MessageSquare size={13} className="lead" />
+        )}
+        <span className="session-title">{current.label}</span>
+        <ChevronDown size={13} className="chev" />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            className="session-menu"
+            role="listbox"
+            aria-label="Daftar session"
+            tabIndex={-1}
+            style={{
+              top: pos.top,
+              left: pos.left,
+              width: pos.width,
+              maxHeight: pos.max,
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                close(true);
+              } else if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActive((i) => (i + 1) % options.length);
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((i) => (i - 1 + options.length) % options.length);
+              } else if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                pick(active);
+              }
+            }}
+          >
+            {options.map((option, index) => (
+              <Fragment key={option.id || "new"}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={option.id === value}
+                  className={`session-item${option.fresh ? " new" : ""}${
+                    index === active ? " active" : ""
+                  }${option.id === value ? " on" : ""}`}
+                  onMouseEnter={() => setActive(index)}
+                  onClick={() => pick(index)}
+                >
+                  {option.fresh ? (
+                    <Plus size={13} />
+                  ) : (
+                    <span className="session-dot" />
+                  )}
+                  <span className="session-item-main">
+                    <span className="session-item-title">{option.label}</span>
+                    {option.meta && (
+                      <span className="session-item-meta">{option.meta}</span>
+                    )}
+                  </span>
+                  {option.id === value && (
+                    <Check size={13} className="session-check" />
+                  )}
+                </button>
+                {option.fresh && <div className="session-sep" />}
+              </Fragment>
+            ))}
+            {!sessions.length && (
+              <div className="session-empty">Belum ada session tersimpan.</div>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -1002,10 +1204,12 @@ export default function Dashboard() {
             </div>
             <div className="title-actions">
               <button
-                className="btn"
+                className="btn icon-only"
+                aria-label="Refresh"
+                title="Refresh"
                 onClick={() => void action(refresh, "Data diperbarui")}
               >
-                <RefreshCw size={12} /> Refresh
+                <RefreshCw size={12} /> <span className="label">Refresh</span>
               </button>
               <button
                 className="btn primary"
@@ -1432,22 +1636,15 @@ export default function Dashboard() {
               {tab === "chat" && (
                 <section className="panel generic chat-panel">
                   <div className="toolbar chat-toolbar">
-                    <select
-                      aria-label="Session"
+                    <SessionPicker
+                      sessions={sessions}
                       value={session}
-                      onChange={(e) => {
-                        setSession(e.target.value);
+                      onChange={(id) => {
+                        setSession(id);
                         setStream("");
                         setStick(true);
                       }}
-                    >
-                      <option value="">Session baru</option>
-                      {sessions.map((s) => (
-                        <option key={String(s.id)} value={String(s.id)}>
-                          {String(s.title)}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     <div className="seg" role="tablist" aria-label="Mode tampilan">
                       <button
                         role="tab"
@@ -1888,15 +2085,43 @@ export default function Dashboard() {
                         <h3>{String(s.title)}</h3>
                         <p className="muted text-xs mt-2">{String(s.id)}</p>
                       </div>
-                      <button
-                        className="btn"
-                        onClick={() => {
-                          setSession(String(s.id));
-                          setTab("chat");
-                        }}
-                      >
-                        Buka <ArrowRight size={12} />
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          className="btn"
+                          onClick={() => {
+                            setSession(String(s.id));
+                            setTab("chat");
+                          }}
+                        >
+                          Buka <ArrowRight size={12} />
+                        </button>
+                        <button
+                          className="btn danger"
+                          aria-label="Hapus sesi"
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              !window.confirm(
+                                `Hapus sesi "${String(s.title)}"? Riwayat chat, memori, jadwal, dan workspace-nya ikut terhapus permanen.`,
+                              )
+                            )
+                              return;
+                            void action(async () => {
+                              await api(
+                                `sessions/${s.id}`,
+                                undefined,
+                                "DELETE",
+                              );
+                              if (session === String(s.id)) {
+                                setSession("");
+                                setStream("");
+                              }
+                            }, "Sesi dihapus");
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {!sessions.length && <div className="empty">{t.empty}</div>}
