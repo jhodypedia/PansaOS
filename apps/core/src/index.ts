@@ -296,7 +296,7 @@ for (const server of mcp.configs()) void mcp.connect(server);
 app.get("/api/sessions/:id/state", async req => {
   const id = (req.params as { id: string }).id;
   if (!store.get("SELECT id FROM sessions WHERE id=?", id)) throw Object.assign(new Error("Session tidak ditemukan"), { statusCode: 404 });
-  return { mode: tools.state.mode(id), todos: tools.state.todos(id), usage: agent.sessionUsage(id), checkpoints: await tools.checkpoints.list(id), visible_after: tools.state.get(id, "visible_after", 0), subagents: [...tools.backgroundTasks.values()].filter(t => t.session === id), questions: [...tools.questions].filter(([, q]) => q.session === id).map(([key, q]) => ({ id: key, question: q.question, options: q.options })) };
+  return { mode: tools.state.mode(id), todos: tools.state.todos(id), usage: agent.sessionUsage(id), checkpoints: await tools.checkpoints.list(id), visible_after: tools.state.get(id, "visible_after", 0), subagents: [...tools.backgroundTasks.values()].filter(t => t.session === id), questions: [...tools.questions].filter(([, q]) => q.session === id).map(([key, q]) => ({ id: key, question: q.question, options: q.options, details: q.details, allow_free: q.allowFree, expires_at: q.expiresAt, default: q.default })) };
 });
 app.post("/api/sessions/:id/mode", async req => {
   const id = (req.params as { id: string }).id;

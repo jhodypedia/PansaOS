@@ -2,6 +2,7 @@
 const config = {
   output: "standalone",
   poweredByHeader: false,
+  allowedDevOrigins: ["localhost", "127.0.0.1"],
   experimental: { cpus: 1 },
   async rewrites() {
     const core = process.env.CORE_URL ?? "http://localhost:3001";

@@ -10,8 +10,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#090a10" },
-    { media: "(prefers-color-scheme: light)", color: "#f5f6fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#090e12" },
+    { media: "(prefers-color-scheme: light)", color: "#f1f5f2" },
   ],
 };
 const themeScript = `(function(){try{var t=localStorage.getItem("pansa-theme");if(!t)t=window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=t}catch(e){}})();`;

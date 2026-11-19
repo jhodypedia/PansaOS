@@ -16,7 +16,8 @@ import type { Tools } from "./tools.js";
 import type { Agent } from "./agent.js";
 import { config } from "./config.js";
 import { telegramMessages } from "./telegram-format.js";
-const help = `/new session baru\n/stop hentikan task\n/status status agent\n/model ID kunci provider\n/providers daftar provider\n/addprovider nama|base_url|api_key|model\n/skills skill aktif\n/memory kata untuk mencari\n/forget kata atau fakta untuk dilupakan\n/tasks task berjalan\n/dashboard link dashboard\n/autoapprove on|off`;
+import { approvalCard, questionCard, resolvedQuestionCard } from "./telegram-cards.js";
+const help = `**PANSA · ASISTEN PRIBADI ANDA**\n\nKirim pertanyaan, ide, atau tugas. Saya akan membantu Anda menyelesaikannya.\n\n**Percakapan**\n/new — Mulai sesi baru\n/stop — Hentikan task\n/status — Lihat status\n/tasks — Task yang aktif\n\n**Pengetahuan**\n/memory kata — Cari memori\n/forget fakta — Lupakan memori\n/skills — Keahlian yang tersedia\n\n**Workspace**\n/dashboard — Buka dashboard\n/providers — Kelola provider AI\n/model — Pilih model\n/autoapprove on|off — Atur persetujuan\n\nAnda juga dapat mengirim dokumen, foto, atau pesan suara.`;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const barText = (frame: number, done: boolean) => {
@@ -102,6 +103,13 @@ export async function startTelegram(d: Deps) {
   const bot = new Bot(config.BOT_TOKEN);
   bot.api.config.use(autoRetry({ maxRetryAttempts: 3 }));
   bot.api.config.use(hydrateFiles(bot.token));
+  bot.api.config.use((previous, method, payload, signal) => {
+    if ((method === "sendMessage" || method === "editMessageText") && "text" in payload && typeof payload.text === "string" && !("entities" in payload) && !("parse_mode" in payload)) {
+      const messages = telegramMessages(payload.text);
+      if (messages.length === 1) Object.assign(payload, { text: messages[0]!.text, entities: messages[0]!.entities });
+    }
+    return previous(method, payload, signal);
+  });
   const allowed = (ctx: Context) =>
     Boolean(ctx.from && config.admins.includes(ctx.from.id));
   bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
@@ -113,6 +121,8 @@ export async function startTelegram(d: Deps) {
     return ctx.from.id;
   };
   const wizard = new Map<number, string[]>();
+  const questionMessages = new Map<string, { chat: number; message: number }[]>();
+  const approvalMessages = new Map<string, { chat: number; message: number }[]>();
   const formattedEdit = async (ctx: Context, messageId: number, text: string, entities: MessageEntity[]) => {
     try {
       await ctx.api.editMessageText(ctx.chat!.id, messageId, text, { entities, reply_markup: new InlineKeyboard() });
@@ -192,11 +202,29 @@ export async function startTelegram(d: Deps) {
   d.store.bus.on("event", (e: LiveEvent) => {
     if (e.type === "progress" && e.data.kind === "question") {
       const keyboard = new InlineKeyboard();
-      for (const [index, option] of (e.data.options as { label: string }[]).entries()) keyboard.text(option.label, `answer:${e.data.id}:${index}`).row();
-      for (const id of config.admins) void bot.api.sendMessage(id, `${e.data.question}\n${e.data.default ? `Default setelah 5 menit: ${e.data.default}` : "Tanpa jawaban dalam 5 menit: task berhenti."}`, { reply_markup: keyboard }).catch(() => {});
+      for (const [index, option] of (e.data.options as { label: string }[]).entries()) keyboard.text(`${index + 1} · ${option.label}`, `answer:${e.data.id}:${index}`).row();
+      const key = String(e.data.id);
+      questionMessages.set(key, []);
+      for (const id of config.admins) void bot.api.sendMessage(id, questionCard(e.data), { reply_markup: keyboard }).then(async message => {
+        if (!d.tools.questions.has(key)) { await bot.api.editMessageReplyMarkup(id, message.message_id, { reply_markup: new InlineKeyboard() }); return; }
+        questionMessages.get(key)?.push({ chat: id, message: message.message_id });
+      }).catch(() => {});
+    }
+    if (e.type === "progress" && e.data.kind === "question_resolved") {
+      const key = String(e.data.id);
+      const card = telegramMessages(resolvedQuestionCard(e.data))[0]!;
+      for (const message of questionMessages.get(key) ?? []) void bot.api.editMessageText(message.chat, message.message, card.text, { entities: card.entities, reply_markup: new InlineKeyboard() }).catch(() => {});
+      questionMessages.delete(key);
+    }
+    if (e.type === "audit" && (e.data.action === "approval" || e.data.action === "approval_closed")) {
+      const key = String(e.data.id);
+      for (const message of approvalMessages.get(key) ?? []) void bot.api.deleteMessage(message.chat, message.message).catch(() => bot.api.editMessageReplyMarkup(message.chat, message.message, { reply_markup: new InlineKeyboard() }).catch(() => {}));
+      approvalMessages.delete(key);
     }
     if (e.type === "progress" && (e.data.kind === "todo" || (e.data.kind === "subagent" && e.data.status !== "running"))) void d.tools.send(String(e.data.text).slice(0, 1000)).catch(() => {});
     if (e.type === "approval") {
+      const key = String(e.data.id);
+      approvalMessages.set(key, []);
       const keyboard = new InlineKeyboard()
         .text("✅ Setuju", `approve:${e.data.id}:yes`)
         .text("❌ Tolak", `approve:${e.data.id}:no`);
@@ -204,9 +232,13 @@ export async function startTelegram(d: Deps) {
         void bot.api
           .sendMessage(
             id,
-            `Approval tool ${e.data.tool}\n${JSON.stringify(e.data.args).slice(0, 2000)}`,
+            approvalCard(e.data),
             { reply_markup: keyboard },
           )
+          .then(async message => {
+            if (!d.tools.pending.has(key)) { await bot.api.deleteMessage(id, message.message_id); return; }
+            approvalMessages.get(key)?.push({ chat: id, message: message.message_id });
+          })
           .catch(() => {});
     }
     if (e.type === "switch") {
@@ -222,7 +254,7 @@ export async function startTelegram(d: Deps) {
       `Telegram ${ctx.chat?.id ?? "unknown"}`,
       ctx.chat?.id ?? null,
     );
-  bot.command("start", (ctx) => ctx.reply(`PansaOS aktif.\n\n${help}`));
+  bot.command("start", (ctx) => ctx.reply(help));
   bot.command("help", async ctx => ctx.reply((await d.agent.commands.execute(String((await session(ctx)).id), "/help"))?.response ?? help));
   for (const name of ["mode", "permissions", "plan", "clear", "compact", "init", "review", "model", "cost", "doctor"])
     bot.command(name, async ctx => {
@@ -237,8 +269,10 @@ export async function startTelegram(d: Deps) {
   bot.callbackQuery(/^answer:/, async ctx => {
     const [, id, index] = ctx.callbackQuery.data.split(":");
     const pending = d.tools.questions.get(id!);
-    try { d.tools.answer(id!, pending?.options[Number(index)] ?? ""); await ctx.answerCallbackQuery("Jawaban tersimpan"); await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); }
-    catch { await ctx.answerCallbackQuery("Pertanyaan kedaluwarsa"); }
+    const option = pending?.options[Number(index)];
+    if (!pending || option === undefined) { await ctx.answerCallbackQuery("Pertanyaan sudah ditutup"); return; }
+    try { d.tools.answer(id!, option); await ctx.answerCallbackQuery(`Tersimpan: ${option}`.slice(0, 180)); }
+    catch { await ctx.answerCallbackQuery("Jawaban belum tersimpan. Silakan coba lagi."); }
   });
   bot.command("new", async (ctx) => {
     const old = await session(ctx);
@@ -486,7 +520,6 @@ export async function startTelegram(d: Deps) {
       await ctx.answerCallbackQuery(
         decision === "yes" ? "Disetujui" : "Ditolak",
       );
-      await ctx.deleteMessage().catch(() => ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }));
     } catch {
       await ctx.answerCallbackQuery("Approval kedaluwarsa");
     }
@@ -571,7 +604,11 @@ export async function startTelegram(d: Deps) {
     }
     const s = await session(ctx);
     const pendingQuestion = [...d.tools.questions].find(([, q]) => q.session === String(s.id));
-    if (pendingQuestion) { d.tools.answer(pendingQuestion[0], ctx.message.text); return ctx.reply("Jawaban diterima."); }
+    if (pendingQuestion) {
+      try { d.tools.answer(pendingQuestion[0], ctx.message.text); void ctx.react("👍").catch(() => {}); }
+      catch (error) { await ctx.reply(`**PANSA · JAWABAN BELUM DITERIMA**\n\n${error instanceof Error ? error.message : "Pilih opsi pada pertanyaan yang masih terbuka."}`); }
+      return;
+    }
     if (d.agent.running.has(String(s.id)))
       return ctx.reply("Task masih berjalan. Gunakan /stop atau /new.");
     const stop = () =>
@@ -595,6 +632,7 @@ export async function startTelegram(d: Deps) {
       finished = false,
       finishedStatus = "",
       revealed = 0;
+    let waitingFor: { kind: "approval" | "question"; id: string } | null = null;
     const steps: string[] = [];
     const SHOW = 3000;
     const render = () => {
@@ -602,6 +640,8 @@ export async function startTelegram(d: Deps) {
       const secs = Math.max(0, (Date.now() - startedAt) / 1000);
       const phase = finished
         ? finishedStatus === "done" ? "SELESAI" : "GAGAL"
+        : waitingFor
+          ? "MENUNGGU ANDA"
         : text.length > 0
           ? "MENULIS JAWABAN"
           : steps.length
@@ -648,8 +688,19 @@ export async function startTelegram(d: Deps) {
       while (busy) await sleep(30);
     };
     const listener = (e: LiveEvent) => {
+      if (e.type === "audit" && (e.data.action === "approval" || e.data.action === "approval_closed") && waitingFor?.id === e.data.id) {
+        waitingFor = null; current = "Melanjutkan pekerjaan"; dirty = true; return;
+      }
       if (e.session_id !== s.id) return;
-      if (e.type === "token") {
+      if (e.type === "approval") {
+        waitingFor = { kind: "approval", id: String(e.data.id) };
+        current = "Tinjau tindakan pada kartu persetujuan di bawah";
+      } else if (e.type === "progress" && e.data.kind === "question") {
+        waitingFor = { kind: "question", id: String(e.data.id) };
+        current = "Pilih opsi pada kartu pertanyaan untuk melanjutkan";
+      } else if (e.type === "progress" && e.data.kind === "question_resolved") {
+        waitingFor = null; current = "Melanjutkan berdasarkan pilihan Anda";
+      } else if (e.type === "token") {
         text += String(e.data.text ?? "");
         current = "✍️ Menyusun jawaban";
       }

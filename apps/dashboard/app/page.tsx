@@ -1,6 +1,8 @@
 "use client";
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   motion,
   AnimatePresence,
@@ -60,6 +62,7 @@ import {
   Server,
   Settings,
   Shield,
+  Sparkles,
   Square,
   Sun,
   Terminal,
@@ -85,50 +88,61 @@ const tabs = [
   ["schedules", Clock],
   ["settings", Settings],
 ] as const;
+function IntelligenceOrb() {
+  return <div className="intelligence-orb" aria-hidden="true">
+    <div className="orb-halo" />
+    <div className="orb-ring orb-ring-one" /><div className="orb-ring orb-ring-two" /><div className="orb-ring orb-ring-three" />
+    <div className="orb-core"><Command size={44} strokeWidth={1.2} /></div>
+    <span className="orb-satellite satellite-one"><MemoryStick size={16} /></span>
+    <span className="orb-satellite satellite-two"><MessageSquare size={16} /></span>
+    <span className="orb-satellite satellite-three"><Zap size={16} /></span>
+  </div>;
+}
+function QuestionCard({ question, onAnswer }: { question: Row; onAnswer: (answer: string) => Promise<unknown> }) {
+  const [answer, setAnswer] = useState("");
+  const [sending, setSending] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [failure, setFailure] = useState("");
+  const select = async (value: string) => {
+    if (sending || submitted || !value.trim()) return;
+    setSending(true); setFailure("");
+    try { await onAnswer(value); setSubmitted(true); }
+    catch (error) { setFailure(error instanceof Error ? error.message : "Jawaban belum tersimpan"); }
+    finally { setSending(false); }
+  };
+  const details = question.details as { label: string; description?: string }[] | undefined;
+  const options = details ?? (question.options as string[] ?? []).map(label => ({ label, description: "" }));
+  return <section className="decision-card" aria-label="Pertanyaan Pansa">
+    <div className="decision-eyebrow"><MessageSquare size={14} /> {submitted ? "JAWABAN TERSIMPAN" : "PILIHAN ANDA"}<span><Clock size={12} /> 5 menit</span></div>
+    <h3>{String(question.question)}</h3>
+    {submitted ? <p className="decision-success"><Check size={15} /> Terima kasih. Pansa melanjutkan pekerjaan.</p> : <>
+      <div className="decision-options">{options.map((option, index) => <button key={option.label} disabled={sending} onClick={() => void select(option.label)}><span className="decision-number">{index + 1}</span><span><strong>{option.label}{question.default === option.label && <small>Default</small>}</strong>{option.description && <p>{option.description}</p>}</span><ArrowUpRight size={15} /></button>)}</div>
+      {question.allow_free !== false && <form className="decision-free" onSubmit={event => { event.preventDefault(); void select(answer); }}><input aria-label="Jawaban Anda sendiri" placeholder="Atau tulis jawaban Anda sendiri…" value={answer} onChange={event => setAnswer(event.target.value)} maxLength={4000} disabled={sending} /><button className="btn" disabled={sending || !answer.trim()} aria-label="Kirim jawaban">{sending ? <Loader2 size={15} className="spin" /> : <ArrowRight size={15} />}</button></form>}
+      <p className="decision-note">{question.default ? `Jika tidak dijawab, otomatis memilih ${String(question.default)}.` : "Task dihentikan jika tidak ada jawaban dalam 5 menit."}</p>
+    </>}
+    {failure && <p className="error" role="alert">{failure}</p>}
+  </section>;
+}
+function CodeBlock({ children }: { children?: React.ReactNode }) {
+  const pre = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (reset.current) clearTimeout(reset.current); }, []);
+  return <div className="code-shell"><div className="code-header"><span><Code2 size={12} /> CODE</span><button type="button" onClick={async () => {
+    try { await navigator.clipboard.writeText(pre.current?.textContent ?? ""); setCopied(true); setFailed(false); }
+    catch { setFailed(true); }
+    if (reset.current) clearTimeout(reset.current);
+    reset.current = setTimeout(() => { setCopied(false); setFailed(false); }, 2000);
+  }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Tersalin" : failed ? "Pilih dan salin manual" : "Salin kode"}</button></div><pre className="code-block" ref={pre}>{children}</pre></div>;
+}
 function Rich({ text }: { text: string }) {
-  const blocks = useMemo(() => splitFences(text), [text]);
-  return (
-    <>
-      {blocks.map((b, i) =>
-        b.code !== undefined ? (
-          <pre className="code-block" key={i}>
-            {b.lang && <span className="code-lang">{b.lang}</span>}
-            <code>{b.code}</code>
-          </pre>
-        ) : (
-          <p className="rich" key={i}>
-            {inline(b.text)}
-          </p>
-        ),
-      )}
-    </>
-  );
-}
-function splitFences(text: string): { code?: string; lang?: string; text: string }[] {
-  const out: { code?: string; lang?: string; text: string }[] = [];
-  const re = /```(\w*)\n?([\s\S]*?)```/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push({ text: text.slice(last, m.index) });
-    out.push({ code: (m[2] ?? "").replace(/\n$/, ""), lang: m[1] || undefined, text: "" });
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push({ text: text.slice(last) });
-  return out.filter((b) => b.code !== undefined || b.text.trim());
-}
-function inline(text: string) {
-  const parts = text.split(/(`[^`]+`|https?:\/\/[^\s)<>]+)/g);
-  return parts.map((p, i) => {
-    if (/^`[^`]+`$/.test(p)) return <code key={i}>{p.slice(1, -1)}</code>;
-    if (/^https?:\/\//.test(p))
-      return (
-        <a key={i} href={p} target="_blank" rel="noreferrer noopener">
-          {p}
-        </a>
-      );
-    return <span key={i}>{p}</span>;
-  });
+  return <div className="rich-content"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+    a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
+    table: ({ children }) => <div className="rich-table"><table>{children}</table></div>,
+    img: ({ alt }) => <span className="muted">{alt || "Gambar"}</span>,
+  }}>{text}</ReactMarkdown></div>;
 }
 function ActionBlock({
   e,
@@ -657,6 +671,9 @@ function Counter({ value }: { value: number }) {
   );
 }
 export default function Dashboard() {
+  const reducedMotion = useReducedMotion();
+  const [mobileViewport, setMobileViewport] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
   const [token, setToken] = useState(""),
     [logged, setLogged] = useState(false),
     [tab, setTab] = useState<Tab>("overview"),
@@ -665,6 +682,28 @@ export default function Dashboard() {
     [navOpen, setNavOpen] = useState(false);
   const [profileDocs, setProfileDocs] = useState<Record<string, string>>({ soul: "", user: "", memory: "" });
   const [memoryEdit, setMemoryEdit] = useState<Record<string, { key: string; content: string }>>({});
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const sync = () => { setMobileViewport(media.matches); if (!media.matches) setNavOpen(false); };
+    sync(); media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  useEffect(() => {
+    if (!navOpen || !mobileViewport) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusables = () => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)") ?? []);
+    focusables()[0]?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
+      else if (!event.shiftKey && document.activeElement === items.at(-1)) { event.preventDefault(); items[0]?.focus(); }
+    };
+    document.addEventListener("keydown", trap);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", trap); previousFocus?.focus(); };
+  }, [navOpen, mobileViewport]);
   useEffect(() => {
     const saved = window.localStorage.getItem("pansa-theme");
     const prefers = window.matchMedia("(prefers-color-scheme: light)").matches;
@@ -1232,7 +1271,7 @@ export default function Dashboard() {
     };
   });
   const Feed = ({ all = false, rows }: { all?: boolean; rows?: Row[] }) => (
-    <div className={all ? "" : "feed"}>
+    <div className={all ? "" : "feed"} tabIndex={all ? undefined : 0} aria-label={all ? undefined : "Aktivitas terbaru"}>
       <AnimatePresence initial={false}>
         {(rows ??
           (all
@@ -1307,9 +1346,14 @@ export default function Dashboard() {
   if (!logged)
     return (
       <div className="login">
-        <motion.form
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
+        <section className="login-story">
+          <div className="eyebrow">YOUR PERSONAL INTELLIGENCE</div>
+          <h1>Satu ruang.<br /><span>Segala kemungkinan.</span></h1>
+          <p>Percakapan, ide, dan pekerjaan Anda. Terhubung dalam asisten pribadi yang sepenuhnya milik Anda.</p>
+          <IntelligenceOrb />
+          <div className="login-promises"><span><Shield size={15} /> Self-hosted</span><span><MemoryStick size={15} /> Memori personal</span><span><Zap size={15} /> Aksi nyata</span></div>
+        </section>
+        <form
           className="panel login-card"
           onSubmit={(e) => {
             e.preventDefault();
@@ -1328,7 +1372,9 @@ export default function Dashboard() {
           </div>
           <h1 className="text-xl">{t.login}</h1>
           <p className="muted mt-2 text-xs">{t.tagline}</p>
+          <label className="login-label" htmlFor="admin-token">Token akses Anda</label>
           <input
+            id="admin-token"
             type="password"
             autoComplete="current-password"
             aria-label="Token admin"
@@ -1339,15 +1385,18 @@ export default function Dashboard() {
           />
           {error && <p className="error">{error}</p>}
           <button className="btn primary" disabled={busy}>
-            Hubungkan <ArrowRight size={13} />
+            {busy ? <><Loader2 size={15} className="spin" /> Menghubungkan…</> : <>Buka workspace <ArrowRight size={15} /></>}
           </button>
-        </motion.form>
+          <p className="login-security"><Shield size={13} /> Akses pribadi. Data tetap di server Anda.</p>
+        </form>
       </div>
     );
   return (
     <div className={navOpen ? "app nav-open" : "app"}>
+      <a href="#workspace-content" className="skip-link">Langsung ke konten</a>
+      <div className="ambient-light" aria-hidden="true" />
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
-      <aside className="sidebar">
+      <aside className="sidebar" ref={sidebarRef} inert={mobileViewport && !navOpen} role={mobileViewport && navOpen ? "dialog" : undefined} aria-modal={mobileViewport && navOpen ? true : undefined} aria-label="Navigation workspace">
         <a className="brand" href="#" onClick={() => setTab("overview")}>
           <span className="brand-icon">
             <Command size={22} />
@@ -1466,7 +1515,7 @@ export default function Dashboard() {
             <div className="avatar">PA</div>
           </div>
         </header>
-        <div className="content">
+        <div className={`content${tab === "chat" ? " content-chat" : ""}`} id="workspace-content" tabIndex={-1}>
           <div className="page-title">
             <div>
               <div className="flex items-center gap-2 mb-2">
@@ -1505,16 +1554,24 @@ export default function Dashboard() {
             </div>
           </div>
           {error && <div className="error">{error}</div>}
-          <AnimatePresence mode="wait">
-            <motion.div
+          <AnimatePresence mode="sync">
+            <div
               key={tab}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.2 }}
+              className="view-transition"
             >
               {tab === "overview" && (
                 <>
+                  <section className="workspace-hero">
+                    <div className="hero-copy">
+                      <div className={`hero-status ${connected ? "online" : ""}`}><span className="status-dot" />{connected ? "WORKSPACE TERHUBUNG" : "MENGHUBUNGKAN WORKSPACE"}</div>
+                      <h2>Ruang untuk ide.<br /><span>Tenaga untuk mewujudkan.</span></h2>
+                      <p>Dari percakapan sederhana hingga pekerjaan besar. Pansa membantu Anda berpikir, mengingat, dan bergerak maju.</p>
+                      <button className="btn primary hero-cta" onClick={() => { setTab("chat"); setSession(""); }}><Sparkles size={16} /> Mulai percakapan <ArrowUpRight size={16} /></button>
+                    </div>
+                    <IntelligenceOrb />
+                    <div className="hero-bottom"><span><Shield size={13} /> Server Anda. Kendali Anda.</span><span>{sessions.length} sesi <i /> {providers.filter(provider => provider.enabled).length} provider aktif</span></div>
+                  </section>
+                  <div className="overview-section-heading"><h2>Workspace dalam angka</h2><span><Activity size={13} /> Data aktivitas aktual</span></div>
                   <div className="stats">
                     {[
                       [
@@ -1550,12 +1607,9 @@ export default function Dashboard() {
                     ].map(([label, value, Icon, foot], i) => {
                       const I = Icon as typeof Activity;
                       return (
-                        <motion.div
+                        <div
                           key={String(label)}
-                          initial={{ opacity: 0, y: 15 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: i * 0.055 }}
-                          whileHover={{ y: -3 }}
+                          style={{ animationDelay: reducedMotion ? "0s" : `${i * 0.055}s` }}
                           className="stat"
                         >
                           <div className="stat-head">
@@ -1572,7 +1626,7 @@ export default function Dashboard() {
                             <span className="status-dot !w-1 !h-1 !mr-0" />
                             {String(foot)}
                           </div>
-                        </motion.div>
+                        </div>
                       );
                     })}
                   </div>
@@ -2054,7 +2108,7 @@ export default function Dashboard() {
                       {!!((sessionState.usage as Row)?.context) && <label>Konteks ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimasi)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
                       {(sessionState.todos as Row[] ?? []).map((item, index) => <div key={index}>{item.status === "completed" ? "✓" : item.status === "in_progress" ? "◉" : "○"} {String(item.content)} · {String(item.status)}</div>)}
                       {(sessionState.subagents as Row[] ?? []).map(task => <div key={String(task.id)}>Subagent {String(task.type)} · {String(task.status)} · sejak {fmtTime(task.since, zone)}</div>)}
-                      {(sessionState.questions as Row[] ?? []).map(q => <div key={String(q.id)}><p>{String(q.question)}</p>{(q.options as string[]).map(option => <button className="btn" key={option} onClick={() => void api(`questions/${q.id}`, { answer: option })}>{option}</button>)}</div>)}
+                      {(sessionState.questions as Row[] ?? []).map(q => <QuestionCard key={String(q.id)} question={q} onAnswer={answer => api(`questions/${q.id}`, { answer })} />)}
                       {!!(sessionState.checkpoints as Row[] ?? []).length && <details><summary>Checkpoint ({(sessionState.checkpoints as Row[]).length})</summary>{(sessionState.checkpoints as Row[]).map(cp => <div key={String(cp.id)}>{String(cp.name)} · {String(cp.time)} · {(cp.files as string[]).length} file</div>)}</details>}
                       <details><summary>Command tersedia</summary>{commandList.map(command => <div key={command.name}>/{command.name} — {command.description}</div>)}</details>
                       <button className="btn" onClick={() => setShowArchive(!showArchive)}>{showArchive ? "Tutup arsip" : "Buka arsip riwayat"}</button>
@@ -2261,7 +2315,7 @@ export default function Dashboard() {
                   >
                     <textarea
                       aria-label="Task"
-                      placeholder="Apa yang ingin kamu bangun hari ini?"
+                      placeholder="Apa yang ingin Anda kerjakan hari ini?"
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       onKeyDown={(e) => {
@@ -2895,7 +2949,7 @@ export default function Dashboard() {
                   </p>
                 </section>
               )}
-            </motion.div>
+            </div>
           </AnimatePresence>
           <footer className="footer">
             <div className="footer-brand">
@@ -2954,6 +3008,14 @@ export default function Dashboard() {
           </footer>
         </div>
       </main>
+      <nav className="mobile-dock" aria-label="Navigasi cepat">
+        {(["overview", "chat", "live", "memory"] as const).map(key => {
+          const Icon = tabs.find(([name]) => name === key)![1];
+          const label = { overview: "Beranda", chat: "Chat", live: "Aktivitas", memory: "Memori" }[key];
+          return <button key={key} className={tab === key ? "on" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => { setTab(key); setNavOpen(false); }}><Icon size={19} /><span>{label}</span>{tab === key && <span className="dock-indicator" />}</button>;
+        })}
+        <button aria-label="Semua menu" onClick={() => setNavOpen(true)}><Menu size={19} /><span>Menu</span></button>
+      </nav>
       <AnimatePresence>
         {notice && (
           <motion.div

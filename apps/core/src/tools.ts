@@ -91,7 +91,7 @@ export class Tools {
   registry = new Map<string, Tool>();
   pending = new Map<string, (ok: boolean) => void>();
   humanWait = new Map<string, { hold: () => void; release: () => void }>();
-  questions = new Map<string, { session: string; question: string; options: string[]; answer: (answer: string) => void }>();
+  questions = new Map<string, { session: string; question: string; options: string[]; details: { label: string; description: string }[]; allowFree: boolean; expiresAt: number; default?: string; answer: (answer: string) => void }>();
   spawnTask: (prompt: string, ctx: ToolContext, type?: "explore" | "plan" | "general") => Promise<unknown> =
     async () => {
       throw new Error("Agent belum siap");
@@ -169,6 +169,7 @@ export class Tools {
           ctx.signal.removeEventListener("abort", abort);
           this.pending.delete(id);
           this.store.run("UPDATE approvals SET status='expired' WHERE id=?", id);
+          this.store.event("audit", ctx.session, { action: "approval_closed", id, status: "expired" });
           reject(new Error("Approval dibatalkan"));
         };
         const timer = setTimeout(abort, 300000);
@@ -177,6 +178,7 @@ export class Tools {
           clearTimeout(timer);
           ctx.signal.removeEventListener("abort", abort);
           this.pending.delete(id);
+          this.store.event("audit", ctx.session, { action: "approval_closed", id, status: ok ? "approved" : "rejected" });
           ok ? resolve() : reject(new Error("Tool ditolak admin"));
         });
         this.store.event("approval", ctx.session, { id, tool: name, args });
@@ -359,12 +361,15 @@ export class Tools {
       const wait = this.humanWait.get(c.session);
       wait?.hold();
       const answer = await new Promise<string>((resolve, reject) => {
-        const cleanup = () => { clearTimeout(timer); this.questions.delete(id); c.signal.removeEventListener("abort", abort); };
-        const abort = () => { cleanup(); reject(new Error("Pertanyaan dibatalkan")); };
-        const timer = setTimeout(() => { cleanup(); a.default ? resolve(String(a.default)) : reject(new Error("Tidak ada jawaban dalam 5 menit; task dihentikan")); }, 300000);
-        this.questions.set(id, { session: c.session, question: String(a.question), options: options.map(o => o.label), answer: value => {
+        const cleanup = (status: string, answer?: string) => {
+          clearTimeout(timer); this.questions.delete(id); c.signal.removeEventListener("abort", abort);
+          this.store.event("progress", c.session, { kind: "question_resolved", id, question: a.question, status, answer });
+        };
+        const abort = () => { cleanup("cancelled"); reject(new Error("Pertanyaan dibatalkan")); };
+        const timer = setTimeout(() => { cleanup(a.default ? "default" : "expired", a.default ? String(a.default) : undefined); a.default ? resolve(String(a.default)) : reject(new Error("Tidak ada jawaban dalam 5 menit; task dihentikan")); }, 300000);
+        this.questions.set(id, { session: c.session, question: String(a.question), options: options.map(o => o.label), details: options, allowFree: Boolean(a.allow_free), expiresAt: Date.now() + 300000, default: a.default ? String(a.default) : undefined, answer: value => {
           if (!a.allow_free && !options.some(o => o.label === value)) throw new Error("Pilih jawaban yang tersedia");
-          cleanup(); resolve(value);
+          cleanup("answered", value); resolve(value);
         } });
         c.signal.addEventListener("abort", abort, { once: true });
         this.store.event("progress", c.session, { kind: "question", id, question: a.question, options, allow_free: a.allow_free, default: a.default, text: a.question });
