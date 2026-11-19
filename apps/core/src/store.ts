@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { redact } from "./security.js";
 
@@ -32,6 +32,7 @@ export class Store {
   constructor(file: string) {
     if (file !== ":memory:") mkdirSync(path.dirname(file), { recursive: true });
     this.db = new Database(file);
+    if (file !== ":memory:") chmodSync(file, 0o600);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
@@ -54,12 +55,24 @@ export class Store {
       CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN INSERT INTO memory_fts(rowid,key,content) VALUES(new.rowid,new.key,new.content); END;
       CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN INSERT INTO memory_fts(memory_fts,rowid,key,content) VALUES('delete',old.rowid,old.key,old.content); END;
       CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN INSERT INTO memory_fts(memory_fts,rowid,key,content) VALUES('delete',old.rowid,old.key,old.content); INSERT INTO memory_fts(rowid,key,content) VALUES(new.rowid,new.key,new.content); END;
-      CREATE TABLE bounties(id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT DEFAULT '', brief TEXT DEFAULT '', deadline TEXT DEFAULT '', criteria TEXT DEFAULT '[]', status TEXT DEFAULT 'baru', session_id TEXT, result TEXT DEFAULT '', score REAL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE approvals(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,tool TEXT NOT NULL,args TEXT NOT NULL,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE auth(token TEXT PRIMARY KEY,expires INTEGER NOT NULL,one_time INTEGER DEFAULT 0);
       CREATE TABLE schedules(id TEXT PRIMARY KEY,cron TEXT NOT NULL,prompt TEXT NOT NULL,session_id TEXT NOT NULL,enabled INTEGER DEFAULT 1,last_run INTEGER DEFAULT 0);
-      INSERT INTO migrations VALUES(1);`);
+       INSERT INTO migrations VALUES(1);`);
+    })();
+    this.migrate();
+  }
+  private migrate() {
+    const hasMigration = (version: number) => Boolean(this.db.prepare("SELECT version FROM migrations WHERE version=?").get(version));
+    if (!hasMigration(2)) this.db.transaction(() => {
+      this.db.exec("ALTER TABLE memory ADD COLUMN source_session TEXT; ALTER TABLE memory ADD COLUMN category TEXT NOT NULL DEFAULT 'fakta'; ALTER TABLE memory ADD COLUMN source_type TEXT NOT NULL DEFAULT 'conversation'; INSERT INTO migrations(version) VALUES(2);");
+    })();
+    if (!hasMigration(3)) this.db.transaction(() => {
+      this.db.exec("UPDATE memory SET source_session=session_id WHERE source_session IS NULL AND session_id IS NOT NULL; UPDATE memory SET session_id=NULL WHERE kind NOT IN ('episodic','note'); INSERT INTO migrations(version) VALUES(3);");
+    })();
+    if (!hasMigration(4)) this.db.transaction(() => {
+      this.db.exec("ALTER TABLE memory ADD COLUMN profile_doc TEXT; INSERT INTO migrations(version) VALUES(4);");
     })();
   }
   all(sql: string, ...params: (string | number | null)[]): Row[] {
@@ -113,17 +126,21 @@ export class Store {
     session: string | null = null,
   ): string {
     const id = randomUUID();
+    const scoped = (kind === "episodic" || kind === "note") && session !== null;
     this.run(
-      "INSERT INTO memory(id,key,content,kind,session_id) VALUES(?,?,?,?,?)",
+      "INSERT INTO memory(id,key,content,kind,session_id,source_session,category,source_type) VALUES(?,?,?,?,?,?,?,?)",
       id,
       key,
       redact(content, this.secrets),
       kind,
+      scoped ? session : null,
       session,
+      ({ preference: "preferensi", preferensi: "preferensi", decision: "keputusan", keputusan: "keputusan", commitment: "komitmen", komitmen: "komitmen", relationship: "hubungan", hubungan: "hubungan" } as Record<string, string>)[kind] ?? "fakta",
+      ["fact", "preference", "preferensi", "decision", "keputusan", "commitment", "komitmen", "relationship", "hubungan"].includes(kind) ? "conversation" : "conversation",
     );
     return id;
   }
-  recall(query: string): Row[] {
+  recall(query: string, session?: string): Row[] {
     const terms = query
       .match(/[\p{L}\p{N}_]+/gu)
       ?.slice(0, 12)
@@ -131,20 +148,23 @@ export class Store {
       .join(" OR ");
     return terms
       ? this.all(
-          "SELECT m.* FROM memory m JOIN memory_fts f ON m.rowid=f.rowid WHERE memory_fts MATCH ? ORDER BY rank LIMIT 20",
-          terms,
+           "SELECT m.* FROM memory m JOIN memory_fts f ON m.rowid=f.rowid WHERE memory_fts MATCH ? AND (m.session_id IS NULL OR m.session_id=?) ORDER BY rank LIMIT 20",
+           terms,
+           session ?? "",
         )
-      : this.all("SELECT * FROM memory ORDER BY rowid DESC LIMIT 100");
+      : this.all("SELECT * FROM memory WHERE session_id IS NULL OR session_id=? ORDER BY rowid DESC LIMIT 100", session ?? "");
+  }
+  async deleteMemory(id: string): Promise<boolean> {
+    this.run("DELETE FROM memory WHERE id=?", id);
+    const exists = this.get("SELECT id FROM memory WHERE id=?", id);
+    if (exists) throw new Error("Memori gagal dihapus");
+    return true;
   }
   purgeSession(session: string): number {
     return this.db.transaction(() => {
       this.run("DELETE FROM memory WHERE session_id=?", session);
       this.run("DELETE FROM approvals WHERE session_id=?", session);
       this.run("DELETE FROM schedules WHERE session_id=?", session);
-      this.run(
-        "UPDATE bounties SET session_id=NULL WHERE session_id=?",
-        session,
-      );
       this.run("DELETE FROM messages WHERE session_id=?", session);
       this.run("DELETE FROM events WHERE session_id=?", session);
       return Number(

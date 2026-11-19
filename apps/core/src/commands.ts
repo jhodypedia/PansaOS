@@ -61,14 +61,14 @@ export class Commands {
     }
     if (name === "cost") return { response: JSON.stringify(this.agent.sessionUsage(session), null, 2) };
     if (name === "doctor") {
-      const shell = await tools.sandbox.run(session, "printf 'sandbox OK\\n'; df -h /workspace; getent hosts make.fun", AbortSignal.timeout(20000), 20000, true).catch(e => `Sandbox gagal: ${e.message}`);
+      const shell = await tools.sandbox.run(session, "printf 'host shell OK\\n'; pwd", AbortSignal.timeout(20000), 20000, true).catch(e => `Eksekusi gagal: ${e.message}`);
       const health = await Promise.all(providers.list().filter(p => p.enabled).map(async p => {
         try {
-          await providers.request(p, [{ role: "user", content: "Reply OK" }], [], AbortSignal.timeout(15000), () => {});
-          return `${p.name}/${p.model}: responsif`;
+          await providers.test(String(p.id));
+          return `${p.name}/${p.model}: sehat`;
         } catch (error) { return `${p.name}/${p.model}: gagal (${redact(error instanceof Error ? error.message : "koneksi gagal", store.secrets)})`; }
       }));
-      return { response: `Provider: ${health.join("\n") || "tidak ada"}\n${shell}\nJika sandbox gagal: bangun image sandbox dan periksa Docker. Jika provider gagal: periksa endpoint/key di pengaturan owner.` };
+      return { response: `Mode eksekusi: ${config.EXEC_MODE}\nDirektori aktif: ${config.workspace}\nProvider: ${health.join("\n") || "tidak ada"}\n${shell}` };
     }
     if (name === "init") {
       const checkpoint = await tools.checkpoints.create(session, "Sebelum /init");

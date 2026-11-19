@@ -18,10 +18,10 @@ import {
 import { Store } from "./store.js";
 import { Sandbox } from "./sandbox.js";
 import { Skills } from "./skills.js";
-import { Makefun } from "./makefun.js";
 import type { Definition } from "./providers.js";
 import { SessionState, TodoSchema, enforceMode } from "./session-state.js";
 import { applyEdits, previewDiff, Checkpoints } from "./workspace.js";
+import { Profile } from "./profile.js";
 
 const MAX_JSON_NODES = 400;
 function compactJson(value: unknown, budget = { left: MAX_JSON_NODES }): unknown {
@@ -86,12 +86,12 @@ const quote = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
 export class Tools {
   backgroundTasks = new Map<string, { id: string; session: string; type: string; status: string; since: string; summary?: unknown }>();
   checkpoints: Checkpoints;
+  profile: Profile;
   state: SessionState;
   registry = new Map<string, Tool>();
   pending = new Map<string, (ok: boolean) => void>();
   humanWait = new Map<string, { hold: () => void; release: () => void }>();
   questions = new Map<string, { session: string; question: string; options: string[]; answer: (answer: string) => void }>();
-  makefun: Makefun;
   spawnTask: (prompt: string, ctx: ToolContext, type?: "explore" | "plan" | "general") => Promise<unknown> =
     async () => {
       throw new Error("Agent belum siap");
@@ -106,7 +106,7 @@ export class Tools {
   ) {
     this.state = new SessionState(store);
     this.checkpoints = new Checkpoints(sandbox);
-    this.makefun = new Makefun(store);
+    this.profile = new Profile(store);
     this.builtins();
     for (const [alias, name] of [["replace_text", "edit_file"], ["rg_grep", "grep"], ["list_dir", "list_files"], ["shell", "bash"], ["sandbox_exec", "bash"]] as const) {
       const tool = this.registry.get(name)!;
@@ -143,9 +143,10 @@ export class Tools {
     name: string,
     args: Record<string, unknown>,
     ctx: ToolContext,
+    force = false,
   ) {
     if (
-      !name.includes("__") && !["git_commit", "checkpoint_restore", "execute_plan", "git_branch"].includes(name) && this.store.get(
+      !force && !name.includes("__") && !["git_commit", "checkpoint_restore", "execute_plan", "git_branch"].includes(name) && this.store.get(
         "SELECT auto_approve FROM sessions WHERE id=?",
         ctx.session,
       )?.auto_approve
@@ -220,15 +221,22 @@ export class Tools {
         this.store.event("progress", ctx.session, { text: `Checkpoint: ${checkpoint.name}`, checkpoint });
       }
     }
-    if ((mode === "ask" && !["ask_question", "todo_read", "todo_write"].includes(name)) || ["write_file", "edit_file", "replace_text", "multi_edit", "bash", "shell", "sandbox_exec", "run_node", "run_python", "lint_test", "unzip", "zip"].includes(name))
-      await this.approval(name, args, ctx);
+    const commandText = String(args.command ?? (["git", "npm", "lint_test"].includes(name) ? (args.args as string[] | undefined)?.join(" ") : ""));
+    if ((name === "git" || ["bash", "shell", "sandbox_exec"].includes(name)) && /\bgit\b[^\n;]*\bcommit\b/.test(commandText)) throw new Error("Gunakan git_commit agar diff lengkap dan approval wajib ditampilkan");
+    if ((name === "git" || name === "bash" || name === "shell" || name === "sandbox_exec") && /\bgit\s+(?:[^;\n]*\s)?push\b/.test(commandText)) {
+      const last = this.store.get("SELECT payload FROM messages WHERE session_id=? AND json_extract(payload,'$.role')='user' ORDER BY id DESC LIMIT 1", ctx.session);
+      if (!last || !/\bpush\b/i.test(String(JSON.parse(String(last.payload)).content))) throw new Error("git push membutuhkan perintah eksplisit owner");
+    }
+    const destructive = /\brm\s+[^\n]*(?:-rf|-fr)|\bgit\s+(?:push|commit|reset\s+--hard)\b/i.test(commandText);
+    const needsApproval = (mode === "ask" && !["ask_question", "todo_read", "todo_write"].includes(name)) || ["write_file", "edit_file", "replace_text", "multi_edit", "bash", "shell", "sandbox_exec", "run_node", "run_python", "lint_test", "unzip", "zip", "git", "npm", "download_file"].includes(name) || (name === "http_request" && String(args.method ?? "GET") !== "GET") || destructive;
+    if (needsApproval) await this.approval(name, args, ctx, destructive || (name === "http_request" && String(args.method ?? "GET") !== "GET"));
     if (
       tool.risky ||
       /rm\s+.*-[a-z]*r|\b(sendTransaction|transfer|payment|withdraw)\b/i.test(
         JSON.stringify(args),
       )
     )
-      await this.approval(name, args, ctx);
+      if (!needsApproval) await this.approval(name, args, ctx, Boolean(tool.risky) || ["telegram_send", "notify"].includes(name));
     const command =
       typeof args.command === "string" ? args.command.slice(0, 300) : undefined;
     const file = typeof args.path === "string" ? args.path.slice(0, 300) : undefined;
@@ -365,18 +373,17 @@ export class Tools {
       this.store.event("progress", c.session, { kind: "answer", id, text: `Keputusan owner: ${answer}` });
       return { question: a.question, answer, source: "owner_or_declared_timeout_default" };
     });
-    const containerPrefix = /^\/?workspace(?:\/|$)/;
     const normalize = (p: string) => {
       const bare = p.trim();
-      if (!containerPrefix.test(bare)) return bare;
-      const stripped = bare.replace(containerPrefix, "");
+      if (config.EXEC_MODE !== "docker" || !/^\/?workspace(?:\/|$)/.test(bare)) return bare;
+      const stripped = bare.replace(/^\/?workspace(?:\/|$)/, "");
       return stripped || ".";
     };
     const resolve = async (c: ToolContext, p: unknown) =>
       safePath(await this.sandbox.root(c.session), normalize(String(p)));
     const format = async (c: ToolContext, input: string) => {
       const rel = normalize(input), file = await resolve(c, rel);
-      if (process.getuid?.() === 0) {
+      if (config.EXEC_MODE === "docker" && process.getuid?.() === 0) {
         await fs.chown(file, 1000, 1000);
         const root = await this.sandbox.root(c.session);
         let dir = path.dirname(file);
@@ -388,7 +395,7 @@ export class Tools {
         ? `[ -x node_modules/.bin/prettier ] && node_modules/.bin/prettier --write -- ${quote(rel)}`
         : extension === ".py" ? `command -v ruff >/dev/null && ruff format -- ${quote(rel)}`
         : extension === ".go" ? `command -v gofmt >/dev/null && gofmt -w -- ${quote(rel)}` : "";
-      if (formatter) await this.sandbox.run(c.session, `cd /workspace; ${formatter}`, c.signal, 30000, true).catch(() => {});
+      if (formatter) await this.sandbox.run(c.session, config.EXEC_MODE === "host" ? formatter : `cd /workspace; ${formatter}`, c.signal, 30000, true).catch(() => {});
       const after = await fs.readFile(file, "utf8");
       const changed = this.state.get<string[]>(c.session, "changed_files", []);
       this.state.set(c.session, "changed_files", [...new Set([...changed, rel])]);
@@ -400,11 +407,11 @@ export class Tools {
         String(a.command),
         c,
         Number(a.timeout ?? 60000),
-        a.fresh === undefined ? true : Boolean(a.fresh),
+        Boolean(a.fresh),
       );
     add(
       "bash",
-      "Run shell in isolated session Docker sandbox. Network is enabled, cwd is /workspace which is the same folder the file tools use; you may install packages in user space there (npm --prefix, pip --user, binaries into /workspace/.tools).",
+      `Run shell in the active project directory using ${config.EXEC_MODE} execution. Working directory persists in this session.`,
       z.object({
         command: s,
         timeout: z.number().min(100).max(300000).default(60000),
@@ -413,7 +420,7 @@ export class Tools {
       shell,
     );
     const pathRule =
-      "Path relatif terhadap workspace session (contoh: connect-body.json, src/index.ts). JANGAN pakai /workspace/... — itu path di dalam container sandbox, bukan path tool ini.";
+      "Path relatif terhadap direktori proyek aktif (contoh: notes.txt, src/index.ts).";
     add(
       "read_file",
       `Read UTF-8 workspace file. ${pathRule}`,
@@ -477,20 +484,20 @@ export class Tools {
       return this.checkpoints.restore(c.session, String(a.id));
     });
     for (const [name, command] of [["git_status", "git rev-parse --git-dir >/dev/null 2>&1 || { echo 'not a git repository'; exit 0; }; git status --short --branch"], ["git_diff", "git rev-parse --git-dir >/dev/null 2>&1 || { echo 'not a git repository'; exit 0; }; git diff HEAD -- .; git diff --cached -- ."], ["git_log", "git rev-parse --git-dir >/dev/null 2>&1 || { echo 'not a git repository'; exit 0; }; git log --oneline -12"]] as const)
-      add(name, `Read ${name} in workspace.`, z.object({}), async (_a, c) => shell({ command: `cd /workspace && ${command}`, fresh: true }, c));
+      add(name, `Read ${name} in workspace.`, z.object({}), async (_a, c) => shell({ command, fresh: false }, c));
     add("git_branch", "List or switch branches with approval.", z.object({ branch: s.optional() }), async (a, c) => {
-      if (!a.branch) return shell({ command: "cd /workspace && git branch --list", fresh: true }, c);
+      if (!a.branch) return shell({ command: "git branch --list", fresh: false }, c);
       await this.approval("git_branch", a, c);
-      return shell({ command: `cd /workspace && git switch -- ${quote(String(a.branch))}`, fresh: true }, c);
+      return shell({ command: `git switch -- ${quote(String(a.branch))}`, fresh: false }, c);
     });
     add("git_commit", "Show full staged diff and proposed commit message, then wait for approval. Never pushes.", z.object({ message: s.min(1) }), async (a, c) => {
-      const names = await shell({ command: "cd /workspace && git diff --cached --name-only", fresh: true }, c);
+      const names = await shell({ command: "git diff --cached --name-only", fresh: false }, c);
       if (/(^|\/)(\.env(?:\.[^/]*)?|[^/]*(?:private[_.-]?key|token|credentials)[^/]*|[^/]+\.pem)$/im.test(names)) throw new Error("Commit file secret ditolak");
-      const diff = await shell({ command: "cd /workspace && git diff --cached --no-ext-diff", fresh: true }, c);
+      const diff = await shell({ command: "git diff --cached --no-ext-diff", fresh: false }, c);
       if (diff.includes("[output dipotong]")) throw new Error("Diff terlalu besar; commit ditolak sampai diff lengkap bisa ditampilkan");
       if (/-----BEGIN .*PRIVATE KEY|(?:sk-|gsk_|af_)[A-Za-z0-9_-]{12,}|(?:api[_-]?key|token|password)\s*[:=]\s*["'][^"']{12,}/i.test(diff)) throw new Error("Diff mengandung pola secret; commit ditolak");
       await this.approval("git_commit", { message: a.message, diff }, c);
-      return shell({ command: `cd /workspace && git commit -m ${quote(String(a.message))}`, fresh: true }, c);
+      return shell({ command: `git commit -m ${quote(String(a.message))}`, fresh: false }, c);
     });
     add("file_info", "Read file size and timestamps.", z.object({ path: s }), async (a, c) => {
       const st = await fs.stat(await resolve(c, a.path)); return { size: st.size, modified: st.mtime.toISOString(), directory: st.isDirectory() };
@@ -498,8 +505,8 @@ export class Tools {
     for (const name of ["symbol_search", "file_outline"])
       add(name, "Find function/class/type definitions using Universal Ctags in sandbox.", z.object({ name: s.optional(), path: s.default(".") }), async (a, c) => {
         await resolve(c, a.path);
-        const rel = String(a.path).replace(/^\/?workspace\/?/, "") || ".";
-        const output = await shell({ command: `cd /workspace && ctags --output-format=json --fields=+n -R -f - ${quote(`./${rel}`)}`, fresh: true }, c);
+        const rel = config.EXEC_MODE === "docker" ? String(a.path).replace(/^\/?workspace\/?/, "") || "." : String(a.path);
+        const output = await shell({ command: `ctags --output-format=json --fields=+n -R -f - ${quote(`./${rel}`)}`, fresh: false }, c);
         if (!output.startsWith("exit=0")) throw new Error(output);
         return output.split("\n").filter(line => { try { const row = JSON.parse(line); return !a.name || String(row.name).includes(String(a.name)); } catch { return false; } }).join("\n");
       });
@@ -525,7 +532,6 @@ export class Tools {
         await fs.rm(p, { recursive: true });
         return "Dihapus";
       },
-      true,
     );
     add(
       "glob",
@@ -641,7 +647,6 @@ export class Tools {
         body: s.optional(),
       }),
       async (a, c) => {
-        if (a.method !== "GET") await this.approval("http_request", a, c);
         const r = await safeFetch(
           String(a.url),
           {
@@ -747,7 +752,7 @@ export class Tools {
       z.object({
         key: s,
         content: s,
-        kind: z.enum(["fact", "note", "episodic"]).default("fact"),
+        kind: z.enum(["fact", "note", "episodic", "preference", "decision", "commitment", "relationship"]).default("fact"),
       }),
       async (a, c) =>
         this.store.remember(
@@ -761,16 +766,18 @@ export class Tools {
       "recall",
       "Search FTS5 long-term memory.",
       z.object({ query: s }),
-      async (a) => this.store.recall(String(a.query)),
+      async (a, c) => this.store.recall(String(a.query), c.session),
     );
     add(
       "forget",
       "Delete memory after approval.",
-      z.object({ id: s }),
-      async (a) =>
-        this.store.run("DELETE FROM memory WHERE id=?", String(a.id)),
+      z.object({ query: s }),
+      async (a, c) => this.profile.forgetMemory(String(a.query), c.session),
       true,
     );
+    add("memory_save", "Simpan fakta tahan lama lintas kanal dengan kategori dan asal percakapan.", z.object({ key: s.min(1).max(300), content: s.min(1).max(8000), category: z.enum(["fakta", "preferensi", "keputusan", "komitmen", "hubungan"]) }), async (a, c) => this.profile.saveMemory(String(a.category), String(a.key), String(a.content), c.session));
+    add("memory_forget", "Hapus memori yang cocok di profil global dan sesi ini, lalu verifikasi dokumen serta indeks.", z.object({ query: s.min(1).max(500) }), async (a, c) => this.profile.forgetMemory(String(a.query), c.session));
+    add("memory_explain", "Tampilkan kapan dan dari percakapan mana memori dipelajari.", z.object({ query: s }), async (a, c) => this.store.all("SELECT id,key,content,kind,category,source_type,source_session,created_at FROM memory WHERE (key LIKE ? OR content LIKE ?) AND (session_id IS NULL OR session_id=?) ORDER BY created_at DESC LIMIT 20", `%${String(a.query)}%`, `%${String(a.query)}%`, c.session));
     add(
       "list_skills",
       "List installed skill metadata.",
@@ -870,189 +877,6 @@ export class Tools {
         return { id, timezone: "UTC" };
       },
       true,
-    );
-    add(
-      "makefun_status",
-      "Check whether a make.fun account is already connected. Free, changes nothing. Call this BEFORE any connect attempt or approval link.",
-      z.object({}),
-      async () => {
-        const key = this.makefun.apiKey();
-        if (!key)
-          return {
-            connected: false,
-            reason:
-              "Belum ada kredensial make.fun tersimpan. Tanya owner akun mana yang dipakai sebelum membuat keypair baru.",
-          };
-        const me = await this.makefun.me();
-        if (!me.ok)
-          return {
-            connected: false,
-            reason:
-              me.status === 401
-                ? "Kredensial tersimpan ditolak make.fun (401). Perlu connect ulang setelah owner menyetujui."
-                : `Status make.fun HTTP ${me.status}`,
-            status: me.status,
-          };
-        const agent = (me.body.agent ?? {}) as Record<string, unknown>;
-        return {
-          connected: true,
-          handle: agent.handle ?? agent.id ?? null,
-          wallet: agent.wallet ?? null,
-          payable_wallet: agent.payable_wallet ?? null,
-        };
-      },
-    );
-    add(
-      "makefun_connect",
-      "Start a make.fun agent connect in ONE call: reuses the stored keypair (or creates one), derives the wallet address from it, and returns code + connect link + expiry. Never type a wallet address yourself.",
-      z.object({}),
-      async () => this.makefun.startConnect(),
-    );
-    add(
-      "makefun_connect_poll",
-      "Poll a pending make.fun connect once (short, no long blocking). Returns connected, authorization_pending, expired, or access_denied. Stores the API key encrypted when approved.",
-      z.object({}),
-      async () => this.makefun.pollConnect(),
-    );
-    add(
-      "makefun_connect_reset",
-      "Discard the pending make.fun connect request and its stored keypair so a fresh keypair and code can be created. Requires approval; only use when the owner asked for a different account.",
-      z.object({}),
-      async () => {
-        this.store.run(
-          "DELETE FROM settings WHERE key IN (?,?,?)",
-          "makefun_keypair",
-          "makefun_credentials",
-          "makefun_pending_connect",
-        );
-        this.makefun.connect = null;
-        return "Keypair dan kredensial make.fun dihapus dari core";
-      },
-      true,
-    );
-    add(
-      "makefun_fetch_bounty",
-      "Fetch actual bounty URL or save pasted brief. Never invent API routes.",
-      z.object({
-        url: s.url().optional(),
-        brief: s.optional(),
-        title: s.default("Bounty make.fun"),
-      }),
-      async (a, c) => {
-        let brief = String(a.brief ?? "");
-        if (a.url) brief = await web(String(a.url), c);
-        if (!brief.trim()) throw new Error("Masukkan URL atau brief");
-        const id = randomUUID();
-        this.store.run(
-          "INSERT INTO bounties(id,title,url,brief,session_id) VALUES(?,?,?,?,?)",
-          id,
-          String(a.title),
-          String(a.url ?? ""),
-          brief,
-          c.session,
-        );
-        return { id, brief };
-      },
-    );
-    add(
-      "makefun_plan",
-      "Save concrete acceptance criteria and implementation plan.",
-      z.object({ id: s, criteria: z.array(s).min(1), plan: s }),
-      async (a) => {
-        this.store.run(
-          "UPDATE bounties SET criteria=?,result=?,status='dikerjakan' WHERE id=?",
-          JSON.stringify(
-            (a.criteria as string[]).map((text) => ({
-              text,
-              passed: false,
-              evidence: "",
-            })),
-          ),
-          String(a.plan),
-          String(a.id),
-        );
-        return "Rencana dan checklist disimpan";
-      },
-    );
-    add(
-      "makefun_build",
-      "Read bounty and mark implementation active. Use coding tools to produce real deliverable.",
-      z.object({ id: s }),
-      async (a) => {
-        const b = this.store.get(
-          "SELECT * FROM bounties WHERE id=?",
-          String(a.id),
-        );
-        if (!b) throw new Error("Bounty tidak ditemukan");
-        this.store.run(
-          "UPDATE bounties SET status='dikerjakan' WHERE id=?",
-          String(a.id),
-        );
-        return {
-          bounty: b,
-          instruction:
-            "Implementasikan seluruh brief dengan write_file/bash. Setelah selesai jalankan makefun_verify dengan command test nyata.",
-        };
-      },
-    );
-    add(
-      "makefun_verify",
-      "Run real test command and store evidence per criterion. Failed tests never mark ready.",
-      z.object({
-        id: s,
-        command: s,
-        evidence: z.array(
-          z.object({ text: s, passed: z.boolean(), evidence: s.min(1) }),
-        ),
-      }),
-      async (a, c) => {
-        const output = await shell({ command: a.command }, c);
-        const evidence = a.evidence as { passed: boolean }[];
-        const ok =
-          output.startsWith("exit=0\n") &&
-          evidence.length > 0 &&
-          evidence.every((e) => e.passed);
-        this.store.run(
-          "UPDATE bounties SET status=?,criteria=?,result=? WHERE id=?",
-          ok ? "dites" : "dikerjakan",
-          JSON.stringify(a.evidence),
-          output,
-          String(a.id),
-        );
-        return { ok, output };
-      },
-    );
-    add(
-      "makefun_submit_pack",
-      "Package tested deliverable with README. Does not submit externally.",
-      z.object({ id: s, summary: s }),
-      async (a, c) => {
-        const b = this.store.get(
-          "SELECT * FROM bounties WHERE id=?",
-          String(a.id),
-        );
-        if (!b || b.status !== "dites")
-          throw new Error("Bounty harus lulus verifikasi");
-        const root = await this.sandbox.root(c.session);
-        await fs.writeFile(
-          await safePath(root, "SUBMISSION.md"),
-          `# ${b.title}\n\n${a.summary}\n\n## Verifikasi\n${b.result}\n`,
-        );
-        const output = await shell(
-          {
-            command:
-              "zip -r submission.zip . -x 'node_modules/*' '.git/*' 'submission.zip' '.env' '.env.*'",
-          },
-          c,
-        );
-        if (!output.startsWith("exit=0")) throw new Error(output);
-        this.store.run(
-          "UPDATE bounties SET status='siap submit',result=? WHERE id=?",
-          String(a.summary),
-          String(a.id),
-        );
-        return { path: "submission.zip", summary: a.summary };
-      },
     );
   }
 }

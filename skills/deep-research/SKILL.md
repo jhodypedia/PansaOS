@@ -7,7 +7,7 @@ tools: [web_fetch, browser, remember, write_file, read_skill, http_request]
 
 # Deep research
 
-Domain: menilai klaim dan menyintesis bukti. Untuk ekstraksi dataset terstruktur baca web-scraping; untuk temuan bug baca bug-report. Ikuti SOUL.md untuk bahasa laporan dan artefak bounty.
+Domain: menilai klaim dan menyintesis bukti. Untuk ekstraksi dataset terstruktur baca web-scraping; untuk temuan bug baca bug-report. Ikuti SOUL.md untuk bahasa laporan.
 
 ## Langkah kerja
 

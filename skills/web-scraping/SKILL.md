@@ -7,7 +7,7 @@ tools: [web_fetch, browser, http_request, write_file, bash, read_file]
 
 # Web scraping
 
-Domain: ekstraksi dan validasi dataset publik. Baca deep-research untuk menilai kebenaran isi; coding-agent untuk membangun aplikasi di atas dataset. Ikuti SOUL.md untuk bahasa artefak bounty.
+Domain: ekstraksi dan validasi dataset publik. Baca deep-research untuk menilai kebenaran isi; coding-agent untuk membangun aplikasi di atas dataset.
 
 ## Langkah kerja
 

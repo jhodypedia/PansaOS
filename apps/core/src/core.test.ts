@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { mkdtemp, writeFile, symlink, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, symlink, rm, readFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { encrypt, decrypt, safePath, redact, checkURL } from "./security.js";
@@ -60,6 +60,43 @@ describe("memory", () => {
     db.run("DELETE FROM memory WHERE id=?", id);
     expect(db.recall("renderer")).toHaveLength(0);
     db.db.close();
+  });
+  it("shares durable facts but hides episodic conversation memory from other sessions", () => {
+    const db = new Store(":memory:");
+    const first = String(db.session("first").id), second = String(db.session("second").id);
+    db.remember("allergy", "peanut allergy", "fact", first);
+    db.remember("private episode", "private conversation phrase", "episodic", first);
+    db.remember("compaction", "first session summary", "note", first);
+    expect(db.recall("peanut", second)).toHaveLength(1);
+    expect(db.recall("private conversation", second)).toHaveLength(0);
+    expect(db.recall("private conversation", first)).toHaveLength(1);
+    expect(db.recall("first session", second)).toHaveLength(0);
+    db.db.close();
+  });
+  it("saves, edits, explains and truly forgets durable memory", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pansa-profile-"));
+    Object.assign(process.env, { MASTER_KEY: key, DASH_TOKEN: "profile-test-dash-token-123456789", PANSA_HOME: dir });
+    vi.resetModules();
+    const { Store: IsolatedStore } = await import("./store.js");
+    const { Profile } = await import("./profile.js");
+    const db = new IsolatedStore(":memory:");
+    const profile = new Profile(db);
+    try {
+      await profile.initialize();
+      await chmod(path.join(dir, "MEMORY.md"), 0o644);
+      const session = String(db.session("profile test").id);
+      const saved = await profile.saveMemory("fakta", "alergi", "alergi kacang", session);
+      expect(db.recall("kacang", String(db.session("other").id)).some((row) => row.id === saved.id)).toBe(true);
+      expect((await profile.updateMemory(saved.id, "alergi", "alergi kacang tanah")).ok).toBe(true);
+      expect((await profile.read("memory"))).toContain("alergi kacang tanah");
+      expect((await profile.read("user"))).toContain("alergi kacang tanah");
+      expect(db.get("SELECT source_session FROM memory WHERE id=?", saved.id)?.source_session).toBe(session);
+      expect((await profile.deleteMemory(saved.id)).verified).toBe(true);
+      expect(db.all("SELECT id FROM memory WHERE profile_doc='MEMORY.md' OR profile_doc='USER.md'").some((row) => String(row.id).startsWith(saved.id))).toBe(false);
+      expect(db.recall("kacang", String(db.session("other").id)).some((row) => row.id === saved.id)).toBe(false);
+      expect(await readFile(path.join(dir, "MEMORY.md"), "utf8")).not.toContain(saved.id);
+      expect(await readFile(path.join(dir, "USER.md"), "utf8")).not.toContain(saved.id);
+    } finally { db.db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 });
 describe("provider manager", () => {  it("rejects empty/refusal/repetitive/malformed responses", () => {
@@ -180,12 +217,6 @@ describe("session purge", () => {
       "prompt",
       gone,
     );
-    db.run(
-      "INSERT INTO bounties(id,title,session_id) VALUES(?,?,?)",
-      "bounty-1",
-      "b",
-      gone,
-    );
     expect(await agent.purge(gone)).toBe(true);
     expect(killed).toContain(gone);
     for (const table of [
@@ -201,9 +232,6 @@ describe("session purge", () => {
     expect(db.get("SELECT COUNT(*) n FROM sessions WHERE id=?", gone)?.n).toBe(
       0,
     );
-    expect(
-      db.get("SELECT session_id FROM bounties WHERE id='bounty-1'")?.session_id,
-    ).toBe(null);
     expect(db.get("SELECT COUNT(*) n FROM sessions WHERE id=?", keep)?.n).toBe(
       1,
     );
@@ -274,26 +302,5 @@ describe("failure reporting", () => {
     const only = db.get("SELECT data FROM events WHERE type='error'");
     expect(JSON.parse(String(only?.data)).error).toBe("Provider mati");
     db.db.close();
-  });
-});
-
-describe("makefun keypair", () => {
-  it("derives the same base58 address from the stored secret and signs verifiably", async () => {
-    const { createKeypair, addressOf, signWith } = await import("./makefun.js");
-    const { createPublicKey, verify } = await import("node:crypto");
-    const pair = createKeypair();
-    expect(pair.address).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
-    expect(addressOf(pair)).toBe(pair.address);
-    const message = "PansaOS connect test";
-    const signature = signWith(pair, message);
-    expect(signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
-    expect(addressOf({ ...pair, address: "" })).toBe(pair.address);
-    const pub = createPublicKey({
-      key: Buffer.from(pair.secret, "base64"),
-      format: "der",
-      type: "pkcs8",
-    });
-    expect(pub.asymmetricKeyType).toBe("ed25519");
-    expect(typeof verify).toBe("function");
   });
 });

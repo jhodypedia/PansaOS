@@ -4,11 +4,10 @@ const config = {
   poweredByHeader: false,
   experimental: { cpus: 1 },
   async rewrites() {
+    const core = process.env.CORE_URL ?? "http://localhost:3001";
     return [
-      {
-        source: "/api/:path*",
-        destination: `${process.env.CORE_URL ?? "http://localhost:3001"}/api/:path*`,
-      },
+      { source: "/api/:path*", destination: `${core}/api/:path*` },
+      { source: "/ws", destination: `${core}/ws` },
     ];
   },
 };

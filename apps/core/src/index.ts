@@ -27,10 +27,12 @@ import { MCP, ServerSchema } from "./mcp.js";
 await mkdir(config.data, { recursive: true });
 await mkdir(config.workspace, { recursive: true });
 const store = new Store(path.join(config.data, "pansaos.sqlite"));
+await mkdir(config.home, { recursive: true });
 const providers = new Providers(store, config.MASTER_KEY);
 const skills = new Skills();
 const sandbox = new Sandbox();
 const tools = new Tools(store, sandbox, skills);
+await tools.profile.initialize();
 const agent = new Agent(store, providers, tools);
 const app = Fastify({
   logger: {
@@ -244,6 +246,15 @@ app.get("/api/stats", async () => ({
   running: agent.running.size,
 }));
 app.get("/api/providers", async () => providers.list());
+app.get("/api/doctor", async (req) => {
+  const session = String((req.query as { session?: string }).session ?? "");
+  const activeDirectory = session ? await sandbox.root(session) : config.workspace;
+  const health = await Promise.all(providers.list().filter((provider) => provider.enabled).map(async (provider) => {
+    try { return { id: provider.id, name: provider.name, model: provider.model, ...(await providers.test(String(provider.id))) }; }
+    catch { return { id: provider.id, name: provider.name, model: provider.model, ok: false }; }
+  }));
+  return { exec_mode: config.EXEC_MODE, workspace_dir: activeDirectory, providers: health };
+});
 app.post("/api/providers", async (req) => providers.save(req.body));
 app.delete("/api/providers/:id", async (req) => {
   const id = (req.params as { id: string }).id;
@@ -344,35 +355,13 @@ app.delete("/api/skills/:name", async (req) => {
   await skills.remove((req.params as { name: string }).name);
   return { ok: true };
 });
-app.get("/api/memory", async (req) =>
-  store.recall(String((req.query as { q?: string }).q ?? "")),
-);
-app.delete("/api/memory/:id", async (req) => {
-  store.run("DELETE FROM memory WHERE id=?", (req.params as { id: string }).id);
-  return { ok: true };
+app.get("/api/memory", async (req) => {
+  const query = req.query as { q?: string; session?: string };
+  const where = query.session ? "(session_id IS NULL OR session_id=?)" : "session_id IS NULL";
+  const terms = String(query.q ?? "").match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12).map((term) => `"${term}"`).join(" OR ");
+  return terms ? store.all(`SELECT m.* FROM memory m JOIN memory_fts f ON m.rowid=f.rowid WHERE memory_fts MATCH ? AND ${where} ORDER BY rank LIMIT 20`, terms, ...(query.session ? [query.session] : [])) : store.all(`SELECT * FROM memory WHERE ${where} ORDER BY rowid DESC LIMIT 100`, ...(query.session ? [query.session] : []));
 });
-app.get("/api/bounties", async () =>
-  store.all("SELECT * FROM bounties ORDER BY created_at DESC"),
-);
-app.patch("/api/bounties/:id", async (req) => {
-  const b = z
-    .object({
-      status: z.enum([
-        "baru",
-        "dikerjakan",
-        "dites",
-        "siap submit",
-        "submitted",
-      ]),
-    })
-    .parse(req.body);
-  store.run(
-    "UPDATE bounties SET status=? WHERE id=?",
-    b.status ?? "baru",
-    (req.params as { id: string }).id,
-  );
-  return { ok: true };
-});
+app.delete("/api/memory/:id", async (req) => tools.profile.deleteMemory((req.params as { id: string }).id));
 app.get("/api/config", async () => ({
   maxSteps: store.setting("max_steps", String(config.MAX_STEPS)),
   publicUrl: config.PUBLIC_URL,
@@ -438,6 +427,31 @@ app.log.info(
   },
   "sandbox capabilities",
 );
+if (config.SCHEDULER_MODE === "internal") {
+  const tick = setInterval(async () => {
+    try {
+      const { CronExpressionParser } = await import("cron-parser");
+      const due = store.all("SELECT * FROM schedules WHERE enabled=1");
+      for (const schedule of due) {
+        try {
+          if (agent.running.has(String(schedule.session_id))) continue;
+          const next = CronExpressionParser.parse(String(schedule.cron), { currentDate: new Date(Number(schedule.last_run) || Date.now() - 60000) }).next().getTime();
+          if (next > Date.now()) continue;
+          store.run("UPDATE schedules SET last_run=? WHERE id=?", Date.now(), String(schedule.id));
+          void agent.run(String(schedule.session_id), String(schedule.prompt)).then((result) => tools.send(`Pengingat: ${result}`)).catch((error) => { agent.fail(String(schedule.session_id), error); });
+        } catch (error) { app.log.error({ id: schedule.id, error }, "schedule tick failed"); }
+      }
+      const day = new Date().toISOString().slice(0, 10);
+      const utcTime = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      if (utcTime >= 120 && store.setting("backup:last_daily_utc") !== day) {
+        const file = path.join(config.data, `backup-daily-${day}.sqlite`);
+        await store.db.backup(file);
+        store.set("backup:last_daily_utc", day);
+      }
+    } catch (error) { app.log.error({ error }, "scheduler tick failed"); }
+  }, 15000);
+  tick.unref();
+}
 app.log.info({ port: config.PORT }, "PansaOS core ready");
 chokidar
   .watch(config.plugins, { ignoreInitial: true })

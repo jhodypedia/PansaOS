@@ -733,8 +733,6 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
 .seg button:hover { color: var(--text-2); }
 .seg button.on { background: var(--bg-elev); color: var(--text); box-shadow: 0 1px 2px #00000030; }
 
-.bounty-steps { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 11px 13px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--hover); }
-.bounty-steps-title { display: inline-flex; align-items: center; gap: 6px; font: 9px 'JetBrains Mono', monospace; color: var(--text-2); }
 .step { display: inline-flex; align-items: center; gap: 5px; font: 9px 'JetBrains Mono', monospace; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border-2); color: var(--text-3); }
 .step.done { color: var(--ok, #37d67a); border-color: color-mix(in srgb, var(--ok, #37d67a) 35%, transparent); background: color-mix(in srgb, var(--ok, #37d67a) 10%, transparent); }
 .step.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
@@ -838,7 +836,6 @@ textarea { resize: vertical; width: 100%; min-height: 120px; }
 .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 4px; }
 .kanban-col { min-width: 150px; background: var(--hover); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
 .kanban-col h3 { font-size: 10px; font-weight: 500; color: var(--text-2); margin: 0 0 16px; }
-.bounty-card { background: var(--bg-elev); border: 1px solid var(--border-3); border-radius: 9px; padding: 12px; font-size: 11px; margin-bottom: 10px; overflow-wrap: anywhere; }
 
 .toast {
   position: fixed;

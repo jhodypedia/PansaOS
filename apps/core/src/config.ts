@@ -1,5 +1,9 @@
 import { z } from "zod";
 import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const env = z
   .object({
@@ -10,14 +14,19 @@ const env = z
       .string()
       .regex(/^[a-fA-F0-9]{64}$/, "MASTER_KEY harus hex 32 byte"),
     DASH_TOKEN: z.string().min(24),
+    PANSA_HOME: z.string().default(path.join(os.homedir(), ".pansa")),
     BOT_TOKEN: z.string().default(""),
     ADMIN_IDS: z.string().default(""),
-    DATA_DIR: z.string().default("../../data"),
+    DATA_DIR: z.string().optional(),
     WORKSPACE_DIR: z.string().default("../../workspace"),
     HOST_WORKSPACE_DIR: z.string().optional(),
-    SKILLS_DIR: z.string().default("../../skills"),
-    PLUGINS_DIR: z.string().default("../../plugins"),
-    SOUL_PATH: z.string().default("../../SOUL.md"),
+    EXEC_MODE: z.enum(["host", "docker"]).default("host"),
+    EXEC_STATE_DIR: z.string().optional(),
+    SKILLS_DIR: z.string().optional(),
+    PLUGINS_DIR: z.string().optional(),
+    SOUL_PATH: z.string().optional(),
+    USER_PATH: z.string().optional(),
+    MEMORY_PATH: z.string().optional(),
     ALLOW_UNSANDBOXED: z.enum(["true", "false"]).default("false"),
     SANDBOX_NETWORK: z.enum(["true", "false"]).default("true"),
     SANDBOX_IMAGE: z.string().default("pansaos-sandbox:local"),
@@ -36,10 +45,15 @@ const env = z
   .parse(process.env);
 export const config = {
   ...env,
-  data: path.resolve(env.DATA_DIR),
+  home: path.resolve(env.PANSA_HOME),
+  state: path.resolve(env.EXEC_STATE_DIR ?? path.join(env.PANSA_HOME, "state")),
+  data: path.resolve(env.DATA_DIR ?? path.join(env.PANSA_HOME, "data")),
   workspace: path.resolve(env.WORKSPACE_DIR),
-  skills: path.resolve(env.SKILLS_DIR),
-  plugins: path.resolve(env.PLUGINS_DIR),
+  skills: path.resolve(env.SKILLS_DIR ?? path.join(env.PANSA_HOME, "skills")),
+  plugins: path.resolve(env.PLUGINS_DIR ?? path.join(env.PANSA_HOME, "plugins")),
+  soul: path.resolve(env.SOUL_PATH ?? path.join(env.PANSA_HOME, "SOUL.md")),
+  user: path.resolve(env.USER_PATH ?? path.join(env.PANSA_HOME, "USER.md")),
+  memory: path.resolve(env.MEMORY_PATH ?? path.join(env.PANSA_HOME, "MEMORY.md")),
   admins: env.ADMIN_IDS.split(",")
     .map(Number)
     .filter(Number.isSafeInteger)

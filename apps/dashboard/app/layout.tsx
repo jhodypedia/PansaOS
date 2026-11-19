@@ -1,9 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 export const metadata: Metadata = {
-  title: "PansaOS · Agent OS untuk bounty hunter",
+  title: "PansaOS · Asisten pribadi",
   description:
-    "Kontrol agent, provider, dan bounty make.fun dalam satu pusat kendali.",
+    "Asisten pribadi serbaguna dengan memori, kanal, dan alat terintegrasi.",
 };
 export const viewport: Viewport = {
   width: "device-width",

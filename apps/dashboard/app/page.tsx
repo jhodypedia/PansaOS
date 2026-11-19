@@ -43,7 +43,6 @@ import {
   Globe,
   Layers,
   LayoutDashboard,
-  ListChecks,
   Loader2,
   LogOut,
   MemoryStick,
@@ -65,7 +64,6 @@ import {
   Sun,
   Terminal,
   Trash2,
-  Trophy,
   Workflow,
   Wrench,
   X,
@@ -84,7 +82,6 @@ const tabs = [
   ["tools", Wrench],
   ["skills", BookOpen],
   ["memory", MemoryStick],
-  ["bounties", Trophy],
   ["schedules", Clock],
   ["settings", Settings],
 ] as const;
@@ -666,6 +663,8 @@ export default function Dashboard() {
     [lang, setLang] = useState<"id" | "en">("id"),
     [theme, setTheme] = useState<"dark" | "light">("dark"),
     [navOpen, setNavOpen] = useState(false);
+  const [profileDocs, setProfileDocs] = useState<Record<string, string>>({ soul: "", user: "", memory: "" });
+  const [memoryEdit, setMemoryEdit] = useState<Record<string, { key: string; content: string }>>({});
   useEffect(() => {
     const saved = window.localStorage.getItem("pansa-theme");
     const prefers = window.matchMedia("(prefers-color-scheme: light)").matches;
@@ -716,8 +715,6 @@ export default function Dashboard() {
     [fileContent, setFileContent] = useState(""),
     [editing, setEditing] = useState(""),
     [settings, setSettings] = useState({
-      makefun_base_url: "",
-      makefun_credentials: "",
       max_steps: 60,
       timezone: DEFAULT_TIMEZONE,
     }),
@@ -978,15 +975,20 @@ export default function Dashboard() {
     setError("");
     const route =
       tab === "memory"
-        ? `memory?q=${encodeURIComponent(query)}`
-        : ["skills", "bounties", "tools", "schedules"].includes(tab)
+        ? `memory?q=${encodeURIComponent(query)}${session ? `&session=${encodeURIComponent(session)}` : ""}`
+        : ["skills", "tools", "schedules"].includes(tab)
           ? tab
           : null;
     if (route)
       api(route)
         .then((r) => setItems(r as Row[]))
         .catch((e) => setError(String(e)));
-  }, [tab, logged, query, api]);
+  }, [tab, logged, query, api, session]);
+  useEffect(() => {
+    if (!logged || (tab !== "settings" && tab !== "memory")) return;
+    for (const document of ["soul", "user", "memory"] as const)
+      void api(`profile/${document}`).then((result) => setProfileDocs((previous) => ({ ...previous, [document]: String((result as Row).content ?? "") }))).catch((e) => setError(String(e)));
+  }, [tab, logged, api]);
   const loadFiles = useCallback(
     async (p = filePath) => {
       if (!session) return;
@@ -1039,7 +1041,6 @@ export default function Dashboard() {
         setZone(saved);
         setSettings((prev) => ({
           ...prev,
-          makefun_base_url: String(s.makefun_base_url ?? ""),
           max_steps: Number(s.max_steps ?? 60),
           timezone: saved,
         }));
@@ -1155,22 +1156,6 @@ export default function Dashboard() {
     const row = sessions.find((s) => String(s.id) === session);
     return Boolean(row?.running);
   }, [events, session, sessions, data, stopped]);
-  const bountySteps = useMemo(
-    () =>
-      timeline
-        .filter(
-          (i) => i.type === "tool" && String(data(i.e).tool ?? "").startsWith("makefun_"),
-        )
-        .map((i) => {
-          const d = data(i.e);
-          return {
-            key: i.key,
-            name: String(d.tool).replace(/^makefun_/, ""),
-            status: String(d.status ?? ""),
-          };
-        }),
-    [timeline, data],
-  );
   const transcript = useMemo(
     () =>
       timeline
@@ -1391,7 +1376,7 @@ export default function Dashboard() {
             </button>
           ))}
           <div className="nav-label">INTELLIGENCE</div>
-          {tabs.slice(7, 11).map(([key, Icon]) => (
+          {tabs.slice(7, 10).map(([key, Icon]) => (
             <button
               key={key}
               onClick={() => {
@@ -1402,9 +1387,6 @@ export default function Dashboard() {
             >
               <Icon size={16} />
               <span>{t[key]}</span>
-              {key === "bounties" && (
-                <span className="ml-auto text-[10px]">↗</span>
-              )}
             </button>
           ))}
           <div className="nav-label">SYSTEM</div>
@@ -1498,7 +1480,7 @@ export default function Dashboard() {
               </h1>
               <p>
                 {tab === "overview"
-                  ? "Semua agent, aktivitas, dan bounty. Satu ruang kendali."
+                  ? "Asisten pribadi, aktivitas, dan memori dalam satu ruang kendali."
                   : t.tagline}
               </p>
             </div>
@@ -1762,25 +1744,6 @@ export default function Dashboard() {
                         <Shield size={12} className="text-[var(--cyan)]" />
                       </div>
                     </section>
-                  </div>
-                  <div className="panel px-5 py-4 flex flex-wrap gap-5 items-center justify-between">
-                    <div className="flex gap-3 items-center">
-                      <span className="stat-icon">
-                        <Trophy size={16} />
-                      </span>
-                      <div>
-                        <p className="text-xs">
-                          Bounty berikutnya, hasil berikutnya.
-                        </p>
-                        <p className="text-[10px] text-[var(--text-dim)] mt-1">
-                          Dari brief make.fun sampai paket submit, dalam satu
-                          alur.
-                        </p>
-                      </div>
-                    </div>
-                    <button className="btn" onClick={() => setTab("bounties")}>
-                      Buka bounty board <ArrowRight size={12} />
-                    </button>
                   </div>
                 </>
               )}
@@ -2085,28 +2048,6 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
-                  {bountySteps.length > 0 && (
-                    <div className="bounty-steps">
-                      <span className="bounty-steps-title">
-                        <ListChecks size={12} /> Progres bounty
-                      </span>
-                      {bountySteps.map((s) => (
-                        <span
-                          key={s.key}
-                          className={`step ${s.status === "done" ? "done" : s.status === "error" ? "bad" : "run"}`}
-                        >
-                          {s.status === "done" ? (
-                            <Check size={10} />
-                          ) : s.status === "error" ? (
-                            <X size={10} />
-                          ) : (
-                            <RefreshCw size={10} className="spin" />
-                          )}
-                          {s.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                   <div className="chat-shell">
                     {session && <div className="session-work-panel">
                       <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} token · {(sessionState.usage as Row)?.cost == null ? "Biaya tidak diketahui" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
@@ -2144,7 +2085,7 @@ export default function Dashboard() {
                           <Bot size={32} />
                           <p>Brief masuk. Agent bergerak.</p>
                           <p className="mt-2 text-[10px]">
-                            Tulis task atau tempel brief bounty untuk memulai.
+                            Tulis pertanyaan atau tugas untuk memulai.
                           </p>
                         </div>
                       )}
@@ -2735,6 +2676,11 @@ export default function Dashboard() {
               {tab === "memory" && (
                 <section className="panel generic">
                   <div className="toolbar">
+                    <button className="btn" onClick={() => void api("memory/export").then((r) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.download = "pansa-memory.json"; a.click(); })}>Ekspor</button>
+                    <label className="btn">Impor<input type="file" accept="application/json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void file.text().then((text) => action(() => api("memory/import", JSON.parse(text)), "Memori diimpor")); }} /></label>
+                  </div>
+                  <details className="list-card"><summary>USER.md · Profil pengguna</summary><textarea aria-label="Profil pengguna" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profil disimpan")}>Simpan profil</button></details>
+                  <div className="toolbar">
                     <input
                       aria-label="Cari memori"
                       placeholder="Cari memori dengan FTS5..."
@@ -2760,13 +2706,14 @@ export default function Dashboard() {
                   </div>
                   {items.map((m) => (
                     <div className="list-card" key={String(m.id)}>
-                      <div>
+                      {memoryEdit[String(m.id)] ? <div className="flex-1"><input aria-label="Kunci memori" value={memoryEdit[String(m.id)]!.key} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, key: e.target.value } })} /><textarea aria-label="Isi memori" value={memoryEdit[String(m.id)]!.content} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, content: e.target.value } })} /><button className="btn" onClick={() => void action(async () => { await api(`memory/${m.id}`, memoryEdit[String(m.id)], "PUT"); setMemoryEdit({ ...memoryEdit, [String(m.id)]: undefined as never }); }, "Memori diperbarui")}>Simpan perubahan</button></div> : <div>
                         <span className="badge">{String(m.kind)}</span>
                         <h3 className="mt-3">{String(m.key)}</h3>
                         <p className="text-xs muted mt-2 whitespace-pre-wrap">
                           {String(m.content)}
                         </p>
-                      </div>
+                      </div>}
+                      <button className="btn" aria-label="Edit memori" onClick={() => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { key: String(m.key), content: String(m.content) } })}>Edit</button>
                       <button
                         className="btn danger"
                         aria-label="Hapus memori"
@@ -2786,73 +2733,7 @@ export default function Dashboard() {
                       Memori akan terisi saat agent menyelesaikan task.
                     </div>
                   )}
-                </section>
-              )}
-              {tab === "bounties" && (
-                <section className="panel generic">
-                  <div className="toolbar">
-                    <input
-                      className="flex-1"
-                      aria-label="URL atau brief bounty"
-                      placeholder="Tempel URL atau brief bounty make.fun..."
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                    />
-                    <button
-                      className="btn primary"
-                      onClick={() => {
-                        setTab("chat");
-                        void send(
-                          `Kerjakan bounty make.fun ini sampai paket submit: ${prompt}. Gunakan tools makefun dan uji deliverable nyata.`,
-                        );
-                      }}
-                      disabled={!prompt.trim()}
-                    >
-                      <Play size={12} /> Kerjakan otomatis
-                    </button>
-                  </div>
-                  <div className="kanban">
-                    {[
-                      "baru",
-                      "dikerjakan",
-                      "dites",
-                      "siap submit",
-                      "submitted",
-                    ].map((status) => (
-                      <div key={status} className="kanban-col">
-                        <h3>
-                          <span className="status-dot !w-1 !h-1" />
-                          {status.toUpperCase()}{" "}
-                          <span className="float-right">
-                            {items.filter((b) => b.status === status).length}
-                          </span>
-                        </h3>
-                        {items
-                          .filter((b) => b.status === status)
-                          .map((b) => (
-                            <div key={String(b.id)} className="bounty-card">
-                              <Trophy
-                                size={13}
-                                className="text-[var(--violet-2)] mb-3"
-                              />
-                              <p>{String(b.title)}</p>
-                              <p className="muted text-[9px] mt-3">
-                                {String(b.deadline || "Tanpa deadline")}
-                              </p>
-                              <button
-                                className="btn mt-3 !text-[9px]"
-                                onClick={() => {
-                                  setSession(String(b.session_id));
-                                  setTab("chat");
-                                }}
-                              >
-                                Lihat progres <ArrowRight size={10} />
-                              </button>
-                            </div>
-                          ))}
-                      </div>
-                    ))}
-                  </div>
+                  <details className="list-card"><summary>MEMORY.md · Memori terkurasi</summary><textarea aria-label="Memori terkurasi" value={profileDocs.memory} onChange={(e) => setProfileDocs({ ...profileDocs, memory: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/memory", { content: profileDocs.memory }, "PUT"), "Memori terkurasi disimpan")}>Simpan memori</button></details>
                 </section>
               )}
               {tab === "tools" && (
@@ -2916,6 +2797,9 @@ export default function Dashboard() {
                       <option value="en">English</option>
                     </select>
                   </div>
+                  <div className="list-card"><span>Direktori proyek</span><code>{String(settingsInfo.workspace_dir ?? "—")}</code></div>
+                  <div className="list-card"><span>Persona SOUL.md</span><textarea aria-label="Persona agent" value={profileDocs.soul} onChange={(e) => setProfileDocs({ ...profileDocs, soul: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/soul", { content: profileDocs.soul }, "PUT"), "Persona disimpan")}>Simpan persona</button></div>
+                  <div className="list-card"><span>Profil USER.md</span><textarea aria-label="Profil pengguna" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profil disimpan")}>Simpan profil</button></div>
                   <div className="list-card tz-card">
                     <span>Zona waktu</span>
                     <div className="tz-control">
@@ -2949,7 +2833,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <div className="list-card">
-                    <span>Sandbox</span>
+                    <span>Mode eksekusi</span>
                     <span className="badge">
                       {String(settingsInfo.sandbox ?? "docker")} · network{" "}
                       {settingsInfo.sandbox_network ? "on" : "off"}
@@ -2962,10 +2846,6 @@ export default function Dashboard() {
                       void action(
                         () =>
                           api("settings", {
-                            makefun_base_url:
-                              settings.makefun_base_url || undefined,
-                            makefun_credentials:
-                              settings.makefun_credentials || undefined,
                             max_steps: Number(settings.max_steps) || undefined,
                             timezone: settings.timezone || DEFAULT_TIMEZONE,
                           }),
@@ -2973,39 +2853,6 @@ export default function Dashboard() {
                       );
                     }}
                   >
-                    <div className="list-card">
-                      <span>make.fun base URL</span>
-                      <input
-                        aria-label="make.fun base URL"
-                        placeholder="https://make.fun"
-                        value={settings.makefun_base_url}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            makefun_base_url: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="list-card">
-                      <span>Kredensial make.fun</span>
-                      <input
-                        aria-label="Kredensial make.fun"
-                        type="password"
-                        placeholder={
-                          settingsInfo.makefun_credentials
-                            ? "Sudah tersimpan"
-                            : "Cookie atau API token"
-                        }
-                        value={settings.makefun_credentials}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            makefun_credentials: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
                     <div className="list-card">
                       <span>Maks step per task</span>
                       <input
@@ -3056,14 +2903,10 @@ export default function Dashboard() {
                 <span className="footer-mark">
                   <Zap size={12} />
                 </span>
-                <span>
-                  PANSAOS <span className="light">/</span> AGENT OS UNTUK BOUNTY
-                  HUNTER
-                </span>
+                <span>PANSAOS <span className="light">/</span> ASISTEN PRIBADI</span>
               </div>
               <p className="footer-tagline">
-                Satu dashboard untuk menjalankan agent, memantau task, dan
-                mengelola sesi bounty.
+                Satu dashboard untuk percakapan, tugas, dan memori pribadi.
               </p>
             </div>
             <nav className="footer-links" aria-label="Tautan footer">

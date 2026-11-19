@@ -7,7 +7,7 @@ tools: [read_file, write_file, browser, bash, web_fetch, http_request]
 
 # Bug report
 
-Domain: validasi dan dokumentasi bug. Untuk memperbaiki implementasi baca coding-agent; untuk memeriksa sumber/known issue baca deep-research. Ikuti SOUL.md untuk bahasa owner dan artefak bounty.
+Domain: validasi dan dokumentasi bug. Untuk memperbaiki implementasi baca coding-agent; untuk memeriksa sumber/known issue baca deep-research. Ikuti SOUL.md untuk bahasa laporan.
 
 ## Langkah kerja
 

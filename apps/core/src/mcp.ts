@@ -54,7 +54,8 @@ export class MCP {
         if (!server.command) throw new Error("Perintah stdio wajib diisi");
         if (server.args.some(arg => arg.includes("/home/") || arg.includes("docker.sock") || arg.includes(".."))) throw new Error("Argumen MCP harus dibatasi ke /workspace");
         await this.tools.sandbox.root(server.session);
-        await client.connect(new StdioClientTransport({ command: "docker", args: ["run", "--rm", "-i", "--label", `pansa.session=${server.session}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--memory", "2g", "--cpus", "2", "--pids-limit", "512", "--network", "bridge", "-v", `${path.join(config.HOST_WORKSPACE_DIR ?? config.workspace, server.session)}:/workspace`, "-w", "/workspace", "-e", "HOME=/workspace/.home", "--tmpfs", "/tmp:rw,nosuid,size=512m", "--shm-size", "512m", config.SANDBOX_IMAGE, server.command, ...server.args], stderr: "pipe" }));
+         if (config.EXEC_MODE === "host") throw new Error("MCP stdio memerlukan mode docker; gunakan MCP HTTP/SSE pada mode host");
+         await client.connect(new StdioClientTransport({ command: "docker", args: ["run", "--rm", "-i", "--label", `pansa.session=${server.session}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--memory", "2g", "--cpus", "2", "--pids-limit", "512", "--network", "bridge", "-v", `${path.join(config.HOST_WORKSPACE_DIR ?? config.workspace, server.session)}:/workspace`, "-w", "/workspace", "-e", "HOME=/workspace/.home", "--tmpfs", "/tmp:rw,nosuid,size=512m", "--shm-size", "512m", config.SANDBOX_IMAGE, server.command, ...server.args], stderr: "pipe" }));
       } else {
         if (!server.url) throw new Error("URL MCP wajib diisi");
         await checkURL(server.url, false);

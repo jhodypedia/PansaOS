@@ -16,9 +16,11 @@ COPY --from=build /app/apps/core/node_modules ./apps/core/node_modules
 RUN /app/apps/core/node_modules/.bin/playwright install --with-deps chromium
 COPY --from=build /app/apps/core/dist ./apps/core/dist
 COPY --from=build /app/apps/core/package.json ./apps/core/package.json
+COPY --from=build /app/apps/core/package.json ./apps/core/node_modules/@pansa/core/package.json
 COPY skills ./skills
 COPY commands ./commands
 COPY SOUL.md ./SOUL.md
+COPY apps/core/dist/cli.js ./apps/core/dist/cli.js
 RUN mkdir -p /app/data /app/workspace /app/plugins
 EXPOSE 3001
 CMD ["node","apps/core/dist/index.js"]

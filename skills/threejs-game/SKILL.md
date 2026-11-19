@@ -7,7 +7,7 @@ tools: [read_file, read_skill, write_file, edit_file, bash, browser, run_node, l
 
 # Three.js game
 
-Domain: gameplay, rendering 3D dan game feel. Baca coding-agent untuk kualitas software, bahasa deliverable, aksesibilitas dan motion umum; baca makefun-bounty bila game adalah entry kompetisi.
+Domain: gameplay, rendering 3D dan game feel. Baca coding-agent untuk kualitas software, aksesibilitas dan motion umum.
 
 ## Langkah kerja
 

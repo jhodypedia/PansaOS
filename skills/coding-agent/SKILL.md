@@ -7,7 +7,7 @@ tools: [read_file, list_files, read_skill, write_file, edit_file, bash, run_node
 
 # Coding agent
 
-Domain: implementasi dan perbaikan software lintas stack. Untuk gameplay 3D baca threejs-game; untuk alur kompetisi baca makefun-bounty. Aturan bahasa mengikuti SOUL.md: kode, komentar, nama test, README dan commit deliverable berbahasa Inggris; laporan kepada owner berbahasa Indonesia.
+Domain: implementasi dan perbaikan software lintas stack. Untuk gameplay 3D baca threejs-game. Ikuti bahasa dan konvensi proyek pengguna; laporan kepada pengguna default Bahasa Indonesia.
 
 ## Langkah kerja
 

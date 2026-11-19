@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { config } from "./config.js";
 
 export function execute(
@@ -13,7 +14,7 @@ export function execute(
     signal.throwIfAborted();
     const child = spawn(command, args, {
       cwd,
-      env: { PATH: process.env.PATH, HOME: "/tmp", LANG: "C.UTF-8" },
+      env: { PATH: process.env.PATH, HOME: config.EXEC_MODE === "host" ? (process.env.HOME ?? os.homedir()) : "/tmp", LANG: "C.UTF-8" },
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -44,11 +45,16 @@ export function execute(
 }
 export class Sandbox {
   private queues = new Map<string, Promise<unknown>>();
+  private sessionRoots = new Map<string, string>();
+  setRoot(session: string, root: string) {
+    if (!/^[a-f0-9-]{36}$/.test(session)) throw new Error("Session ID invalid");
+    this.sessionRoots.set(session, path.resolve(root));
+  }
   async home(session: string) {
     await this.root(session);
-    const home = path.join(config.workspace, ".agent-home", session);
+    const home = path.join(config.state, "sessions", session, "home");
     await fs.mkdir(home, { recursive: true });
-    if (process.getuid?.() === 0) await fs.chown(home, 1000, 1000);
+    if (config.EXEC_MODE === "docker" && process.getuid?.() === 0) await fs.chown(home, 1000, 1000);
     return home;
   }
   async persistent(session: string, command: string, signal: AbortSignal, timeout: number) {
@@ -60,6 +66,17 @@ export class Sandbox {
   private async execPersistent(session: string, command: string, signal: AbortSignal, timeout: number) {
     await this.root(session);
     const home = await this.home(session);
+    if (config.EXEC_MODE === "host") {
+      const stateFile = path.join(config.state, "sessions", session, "shell.json");
+      const saved: { cwd?: string } = await fs.readFile(stateFile, "utf8").then((text) => JSON.parse(text) as { cwd?: string }).catch(() => ({} as { cwd?: string }));
+      const root = await this.root(session);
+      const cwd = saved.cwd && (saved.cwd === root || saved.cwd.startsWith(root + path.sep)) ? saved.cwd : root;
+      const result = await execute("bash", ["-lc", `cd ${JSON.stringify(cwd)}; { ${command}; }; status=$?; pwd > ${JSON.stringify(path.join(home, ".cwd.tmp"))}; exit $status`], AbortSignal.any([signal, AbortSignal.timeout(timeout)]), root);
+      const nextCwd = await fs.readFile(path.join(home, ".cwd.tmp"), "utf8").catch(() => root);
+      await fs.rm(path.join(home, ".cwd.tmp"), { force: true });
+      if (nextCwd.startsWith(root)) await fs.writeFile(stateFile, JSON.stringify({ cwd: nextCwd.trim() }));
+      return result;
+    }
     const name = `pansa-shell-${session}`;
     const combined = AbortSignal.any([signal, AbortSignal.timeout(timeout)]);
     const inspected = await execute("docker", ["inspect", "-f", "{{.State.Running}}", name], combined);
@@ -70,7 +87,7 @@ export class Sandbox {
       if (existed) await execute("docker", ["rm", "-f", name], combined);
       const hostBase = config.HOST_WORKSPACE_DIR ?? config.workspace;
       const daemon = `mkdir -p /tmp/pansa-shell; mkfifo /tmp/pansa-shell/requests; exec 3<>/tmp/pansa-shell/requests; set -o history; HISTFILE=/home/agent/.bash_history; history -r; while IFS= read -r request <&3; do { source "$request"; } >"$request.out" 2>&1; result=$?; printf '%s\\n%s\\n' "$result" "$PWD" >"$request.status"; history -w; done`;
-      const started = await execute("docker", ["run", "-d", "--name", name, "--label", `pansa.session=${session}`, "--init", "--cpus", "2", "--memory", "2g", "--pids-limit", "512", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,size=1g", "--network", config.SANDBOX_NETWORK === "true" ? "bridge" : "none", "--user", "1000:1000", "-v", `${path.join(hostBase, session)}:/workspace`, "-v", `${path.join(hostBase, ".agent-home", session)}:/home/agent`, "-w", "/workspace", "-e", "HOME=/home/agent", "-e", "PATH=/home/agent/.local/bin:/workspace/.local/bin:/workspace/.tools:/usr/local/bin:/usr/bin:/bin", config.SANDBOX_IMAGE, "bash", "-c", daemon], combined);
+       const started = await execute("docker", ["run", "-d", "--name", name, "--label", `pansa.session=${session}`, "--init", "--cpus", "2", "--memory", "2g", "--pids-limit", "512", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,size=1g", "--network", config.SANDBOX_NETWORK === "true" ? "bridge" : "none", "--user", "1000:1000", "-v", `${path.join(hostBase, session)}:/workspace`, "-v", `${path.join(config.state, "sessions", session, "home")}:/home/agent`, "-w", "/workspace", "-e", "HOME=/home/agent", "-e", "PATH=/home/agent/.local/bin:/workspace/.local/bin:/workspace/.tools:/usr/local/bin:/usr/bin:/bin", config.SANDBOX_IMAGE, "bash", "-c", daemon], combined);
       if (!started.startsWith("exit=0")) throw new Error(started);
       await fs.writeFile(path.join(home, ".shell-started"), new Date().toISOString());
     }
@@ -89,6 +106,7 @@ export class Sandbox {
   }
   async kill(session: string): Promise<number> {
     if (!/^[a-f0-9-]{36}$/.test(session)) return 0;
+    if (config.EXEC_MODE === "host") return 0;
     try {
       const listed = await execute(
         "docker",
@@ -114,9 +132,9 @@ export class Sandbox {
   }
   async root(session: string) {
     if (!/^[a-f0-9-]{36}$/.test(session)) throw new Error("Session ID invalid");
-    const root = path.join(config.workspace, session);
+    const root = config.EXEC_MODE === "host" ? (this.sessionRoots.get(session) ?? config.workspace) : path.join(config.workspace, session);
     await fs.mkdir(root, { recursive: true });
-    if (process.getuid?.() === 0) await fs.chown(root, 1000, 1000);
+    if (config.EXEC_MODE === "docker" && process.getuid?.() === 0) await fs.chown(root, 1000, 1000);
     return root;
   }
   async run(
@@ -132,7 +150,7 @@ export class Sandbox {
         signal,
         AbortSignal.timeout(Math.min(timeout, 300000)),
       ]);
-    if (config.ALLOW_UNSANDBOXED === "true")
+    if (config.EXEC_MODE === "host" || config.ALLOW_UNSANDBOXED === "true")
       return execute("bash", ["-lc", command], combined, root);
     const name = `pansa-${session}-${crypto.randomUUID().slice(0, 8)}`;
     const hostRoot = path.join(

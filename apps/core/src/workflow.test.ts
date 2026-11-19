@@ -5,16 +5,20 @@ import path from "node:path";
 import { enforceMode, structuredCompaction, COMPACTION_SECTIONS, TodoSchema } from "./session-state.js";
 import { applyEdits, Checkpoints } from "./workspace.js";
 import type { Sandbox } from "./sandbox.js";
+import { randomUUID } from "node:crypto";
 
 describe("permission modes", () => {
   it("enforces Plan at Tools.call before write handlers run", async () => {
     process.env.MASTER_KEY = "a".repeat(64);
     process.env.DASH_TOKEN = "workflow-test-dash-token-123456789";
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pansa-plan-"));
+    process.env.PANSA_HOME = path.join(dir, ".pansa");
+    process.env.WORKSPACE_DIR = dir;
+    process.env.EXEC_MODE = "host";
     const { Store } = await import("./store.js");
     const { Tools } = await import("./tools.js");
     const { Skills } = await import("./skills.js");
     const db = new Store(":memory:");
-    const dir = await mkdtemp(path.join(os.tmpdir(), "pansa-plan-"));
     try {
       const sandbox = { root: async () => dir } as unknown as Sandbox;
       const tools = new Tools(db, sandbox, new Skills());
@@ -27,6 +31,20 @@ describe("permission modes", () => {
       expect(await tools.call("read_file", { path: "existing.txt" }, ctx)).toBe("original");
       await expect(tools.call("bash", { command: "touch forbidden" }, ctx)).rejects.toThrow("mode Plan: hanya baca");
     } finally { db.db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+  it("runs host shell without Docker and preserves cwd across calls", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pansa-host-shell-"));
+    try {
+      const { Sandbox } = await import("./sandbox.js");
+      const sandbox = new Sandbox();
+      const session = randomUUID();
+      sandbox.setRoot(session, dir);
+      const signal = AbortSignal.timeout(5000);
+      expect(await sandbox.run(session, "pwd", signal)).toContain(dir);
+      await sandbox.run(session, "mkdir -p nested && cd nested", signal);
+      expect(await sandbox.run(session, "pwd", signal)).toContain(path.join(dir, "nested"));
+      expect(await sandbox.run(session, "pwd", signal, 5000, true)).toContain(dir);
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
   it("blocks writes and shell in Plan and Explore; permits reads", () => {
     for (const tool of ["write_file", "bash", "multi_edit", "remote__write", "git_commit"])

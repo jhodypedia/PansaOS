@@ -27,6 +27,7 @@ BOT_TOKEN=${BOT_TOKEN}
 ADMIN_IDS=${ADMIN_IDS}
 DATA_DIR=/app/data
 WORKSPACE_DIR=/app/workspace
+EXEC_MODE=docker
 HOST_WORKSPACE_DIR=$(pwd)/workspace
 SKILLS_DIR=/app/skills
 PLUGINS_DIR=/app/plugins

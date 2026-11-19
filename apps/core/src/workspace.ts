@@ -69,7 +69,7 @@ export class Checkpoints {
     for (const file of changed) {
       const dest = await safePath(root, file);
       if (!manifest.files.includes(file)) { if (current.includes(file)) await fs.rm(dest); }
-      else { await fs.mkdir(path.dirname(dest), { recursive: true }); await fs.copyFile(path.join(source, file), dest); if (process.getuid?.() === 0) await fs.chown(dest, 1000, 1000); }
+      else { await fs.mkdir(path.dirname(dest), { recursive: true }); await fs.copyFile(path.join(source, file), dest); if (process.env.EXEC_MODE === "docker" && process.getuid?.() === 0) await fs.chown(dest, 1000, 1000); }
     }
     return { restored: changed, checkpoint: manifest.name };
   }

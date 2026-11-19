@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import multipart from "@fastify/multipart";
 import { config } from "./config.js";
-import { safePath, hash, encrypt } from "./security.js";
+import { safePath, hash } from "./security.js";
 import type { Store } from "./store.js";
 import type { Tools } from "./tools.js";
 import type { Providers } from "./providers.js";
@@ -81,7 +81,9 @@ export async function routes(
     memory: process.memoryUsage(),
     system: { total: os.totalmem(), free: os.freemem(), load: os.loadavg() },
     uptime: process.uptime(),
-    sandbox: config.ALLOW_UNSANDBOXED === "true" ? "host" : "docker",
+    sandbox: config.EXEC_MODE,
+    exec_mode: config.EXEC_MODE,
+    workspace_dir: config.workspace,
   }));
   app.get("/api/sessions/:id/messages", async (req) =>
     store.all(
@@ -105,6 +107,18 @@ export async function routes(
       (req.params as { id: string }).id,
     );
     return { ok: true };
+  });
+  app.put("/api/sessions/:id/workspace", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip) || req.headers.origin)
+      return reply.code(403).send({ error: "Pengaturan direktori CLI hanya tersedia melalui API lokal" });
+    if (config.EXEC_MODE !== "host") return reply.code(409).send({ error: "Direktori per session hanya tersedia di mode host" });
+    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session tidak ditemukan" });
+    const { directory } = z.object({ directory: z.string().min(1).max(4096) }).parse(req.body);
+    const target = path.resolve(directory);
+    if (!(await fs.stat(target).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: "Direktori proyek tidak ditemukan" });
+    tools.sandbox.setRoot(id, target);
+    return { directory: target };
   });
   app.get("/api/sessions/:id/files", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -161,28 +175,25 @@ export async function routes(
     const b = z
       .object({ key: z.string(), content: z.string() })
       .parse(req.body);
-    store.run(
-      "UPDATE memory SET key=?,content=? WHERE id=?",
-      b.key,
-      b.content,
-      (req.params as { id: string }).id,
-    );
-    return { ok: true };
+    return tools.profile.updateMemory((req.params as { id: string }).id, b.key, b.content);
   });
+  app.get("/api/memory/export", async () => store.all("SELECT id,key,content,kind,category,source_type,source_session,created_at FROM memory WHERE kind<>'episodic' AND profile_doc IS NULL ORDER BY created_at"));
   app.post("/api/memory/import", async (req) => {
     const entries = z
       .array(
         z.object({
           key: z.string(),
           content: z.string(),
-          kind: z.enum(["fact", "note", "episodic"]).default("fact"),
+          kind: z.enum(["fact", "fakta", "note", "episodic", "preference", "preferensi", "decision", "keputusan", "commitment", "komitmen", "relationship", "hubungan"]).default("fact"),
         }),
       )
       .max(10000)
       .parse(req.body);
-    store.db.transaction(() => {
-      for (const e of entries) store.remember(e.key, e.content, e.kind);
-    })();
+    for (const entry of entries) {
+      if (["fact", "fakta", "preference", "preferensi", "decision", "keputusan", "commitment", "komitmen", "relationship", "hubungan"].includes(entry.kind))
+        await tools.profile.saveMemory(({ fact: "fakta", preference: "preferensi", decision: "keputusan", commitment: "komitmen", relationship: "hubungan" } as Record<string, string>)[entry.kind] ?? entry.kind, entry.key, entry.content);
+      else store.remember(entry.key, entry.content, entry.kind);
+    }
     return { count: entries.length };
   });
   app.post("/api/backup", async () => {
@@ -190,14 +201,22 @@ export async function routes(
     await store.db.backup(file);
     return { file: path.basename(file) };
   });
+  app.get("/api/profile/:document", async (req) => {
+    const document = z.enum(["soul", "user", "memory"]).parse((req.params as { document: string }).document);
+    return { document, content: await tools.profile.read(document) };
+  });
+  app.put("/api/profile/:document", async (req) => {
+    const document = z.enum(["soul", "user", "memory"]).parse((req.params as { document: string }).document);
+    const { content } = z.object({ content: z.string().max(200000) }).parse(req.body);
+    await tools.profile.write(document, content);
+    return { ok: true };
+  });
   app.get("/api/settings", async () => ({
-    makefun_base_url: store.setting("makefun_base_url", ""),
-    makefun_credentials: store.setting("makefun_credentials")
-      ? "tersimpan"
-      : "",
     max_steps: Number(store.setting("max_steps", String(config.MAX_STEPS))),
     timezone: store.setting("timezone", "Asia/Jakarta"),
-    sandbox: config.ALLOW_UNSANDBOXED === "true" ? "host" : "docker",
+    sandbox: config.EXEC_MODE,
+    exec_mode: config.EXEC_MODE,
+    workspace_dir: config.workspace,
     sandbox_network: config.SANDBOX_NETWORK === "true",
     telegram: Boolean(config.BOT_TOKEN),
     public_url: config.PUBLIC_URL,
@@ -205,8 +224,6 @@ export async function routes(
   app.post("/api/settings", async (req) => {
     const b = z
       .object({
-        makefun_base_url: z.string().url().optional(),
-        makefun_credentials: z.string().optional(),
         max_steps: z.number().int().min(1).max(100).optional(),
         timezone: z
           .string()
@@ -228,12 +245,6 @@ export async function routes(
           .optional(),
       })
       .parse(req.body);
-    if (b.makefun_base_url) store.set("makefun_base_url", b.makefun_base_url);
-    if (b.makefun_credentials)
-      store.set(
-        "makefun_credentials",
-        encrypt(b.makefun_credentials, config.MASTER_KEY),
-      );
     if (b.max_steps) store.set("max_steps", String(b.max_steps));
     if (b.timezone) store.set("timezone", b.timezone);
     return { ok: true };
@@ -242,23 +253,17 @@ export async function routes(
     const { CronExpressionParser } = await import("cron-parser");
     let started = 0;
     for (const s of store.all("SELECT * FROM schedules WHERE enabled=1")) {
-      if (agent.running.has(String(s.session_id))) continue;
-      const next = CronExpressionParser.parse(String(s.cron), {
-        currentDate: new Date(Number(s.last_run) || Date.now() - 60000),
-      })
-        .next()
-        .getTime();
-      if (next <= Date.now()) {
-        store.run(
-          "UPDATE schedules SET last_run=? WHERE id=?",
-          Date.now(),
-          String(s.id),
-        );
-        void agent
-          .run(String(s.session_id), String(s.prompt))
-          .catch((e) => agent.fail(String(s.session_id), e));
-        started++;
-      }
+      try {
+        if (agent.running.has(String(s.session_id))) continue;
+        const next = CronExpressionParser.parse(String(s.cron), {
+          currentDate: new Date(Number(s.last_run) || Date.now() - 60000),
+        }).next().getTime();
+        if (next <= Date.now()) {
+          store.run("UPDATE schedules SET last_run=? WHERE id=?", Date.now(), String(s.id));
+          void agent.run(String(s.session_id), String(s.prompt)).then(result => tools.send(`Pengingat: ${result}`)).catch((e) => agent.fail(String(s.session_id), e));
+          started++;
+        }
+      } catch (error) { store.event("error", String(s.session_id), { error: `Jadwal ${s.id} gagal: ${error instanceof Error ? error.message : "cron tidak valid"}` }); }
     }
     for (const p of providers.list())
       if (Number(p.cooldown_until) > 0 && Number(p.cooldown_until) < Date.now())

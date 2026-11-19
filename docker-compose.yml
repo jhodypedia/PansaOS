@@ -2,7 +2,7 @@ services:
   core:
     build: {context: ., dockerfile: docker/Dockerfile.core}
     env_file: [.env]
-    environment: {PORT: '3001', SANDBOX_NETWORK: 'true'}
+    environment: {PORT: '3001', SANDBOX_NETWORK: 'true', EXEC_MODE: 'docker', PANSA_HOME: /app/data/home, DATA_DIR: /app/data, WORKSPACE_DIR: /app/workspace, SKILLS_DIR: /app/skills, PLUGINS_DIR: /app/plugins, SOUL_PATH: /app/SOUL.md}
     volumes: [./data:/app/data, ./workspace:/app/workspace, ./skills:/app/skills, ./plugins:/app/plugins, /var/run/docker.sock:/var/run/docker.sock]
     depends_on: {sandbox: {condition: service_completed_successfully}}
     restart: unless-stopped

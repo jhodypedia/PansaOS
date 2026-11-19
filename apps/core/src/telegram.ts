@@ -15,7 +15,7 @@ import type { Skills } from "./skills.js";
 import type { Tools } from "./tools.js";
 import type { Agent } from "./agent.js";
 import { config } from "./config.js";
-const help = `/new session baru\n/stop hentikan task\n/status status agent\n/model ID kunci provider\n/providers daftar provider\n/addprovider nama|base_url|api_key|model\n/skills skill aktif\n/memory cari memori\n/forget ID hapus memori\n/bounty URL atau kirim brief\n/bounties daftar bounty\n/tasks task berjalan\n/dashboard link dashboard\n/autoapprove on|off`;
+const help = `/new session baru\n/stop hentikan task\n/status status agent\n/model ID kunci provider\n/providers daftar provider\n/addprovider nama|base_url|api_key|model\n/skills skill aktif\n/memory kata untuk mencari\n/forget kata atau fakta untuk dilupakan\n/tasks task berjalan\n/dashboard link dashboard\n/autoapprove on|off`;
 interface Deps {
   app?: FastifyInstance;
   store: Store;
@@ -116,6 +116,16 @@ export async function startTelegram(d: Deps) {
     d.store.run("UPDATE sessions SET chat_id=NULL WHERE id=?", String(old.id));
     d.store.session("Telegram session", ctx.chat?.id ?? null);
     await ctx.reply(`Sesi baru siap. Riwayat sebelumnya tetap tersimpan.`);
+  });
+  bot.command("continue", async (ctx) => {
+    const requested = ctx.match.trim();
+    if (!/^[a-f0-9-]{36}$/.test(requested)) return ctx.reply("Gunakan /continue SESSION_ID dari daftar session dashboard atau CLI.");
+    const target = d.store.get("SELECT id FROM sessions WHERE id=?", requested);
+    if (!target) return ctx.reply("Session tidak ditemukan.");
+    const current = await session(ctx);
+    d.store.run("UPDATE sessions SET chat_id=NULL WHERE id=?", String(current.id));
+    d.store.run("UPDATE sessions SET chat_id=? WHERE id=?", ctx.chat?.id ?? null, requested);
+    await ctx.reply(`Session ${requested} kini dipakai di Telegram; konteks percakapan dan memori sesi berlanjut.`);
   });
   bot.command("stop", async (ctx) => {
     const s = await session(ctx);
@@ -230,24 +240,14 @@ export async function startTelegram(d: Deps) {
     ),
   );
   bot.command("memory", (ctx) =>
-    ctx.reply(
-      JSON.stringify(d.store.recall(ctx.match || ""), null, 2).slice(0, 4000),
-    ),
+    ctx.reply(JSON.stringify(d.store.recall(ctx.match || "", String(d.store.session("Telegram", ctx.chat?.id ?? null).id)), null, 2).slice(0, 4000)),
   );
   bot.command("forget", async (ctx) => {
-    d.store.run("DELETE FROM memory WHERE id=?", ctx.match);
-    await ctx.reply("Memori dihapus jika ID valid.");
+    const query = ctx.match.trim();
+    if (!query) return ctx.reply("Gunakan /forget kata atau fakta yang ingin dilupakan.");
+    const result = await d.tools.profile.forgetMemory(query, String((await session(ctx)).id));
+    await ctx.reply(result.verified ? `Memori dihapus: ${result.deleted}. Verifikasi indeks: berhasil.` : "Penghapusan belum terverifikasi; tidak ada klaim bahwa memori sudah hilang.");
   });
-  bot.command("bounties", (ctx) =>
-    ctx.reply(
-      d.store
-        .all(
-          "SELECT id,title,status,deadline FROM bounties ORDER BY created_at DESC",
-        )
-        .map((b, i) => `${i + 1}. ${b.title} · ${b.status}`)
-        .join("\n") || "Belum ada bounty.",
-    ),
-  );
   bot.command("dashboard", (ctx) => {
     const token = randomBytes(32).toString("hex");
     d.store.run(
@@ -393,27 +393,14 @@ export async function startTelegram(d: Deps) {
           return ctx.reply(`Skill ${meta.name} diinstal.`);
         } catch {}
       }
-      return ctx.reply(
-        `File disimpan di workspace: ${name}${ctx.message.voice ? " · transkripsi belum dikonfigurasi" : ""}`,
-      );
+      const caption = ctx.message.caption?.trim() ?? "";
+      await ctx.reply(`File diterima: ${name}. Saya akan menganalisis isinya.`);
+      if (!d.agent.running.has(String(s.id))) void d.agent.run(String(s.id), `${caption ? `Instruksi pengguna: ${caption}\n` : ""}Analisis lampiran @${name} dan berikan ringkasan, fakta penting, serta keterbatasan. ${ctx.message.voice ? "Jika tidak tersedia alat transkripsi audio, jelaskan keterbatasannya tanpa mengarang transkrip." : ""}`)
+        .then(result => ctx.reply(result.slice(0, 3900)))
+        .catch(error => ctx.reply(`Analisis file gagal: ${error instanceof Error ? error.message : "error"}`));
+      else await ctx.reply("Ada tugas yang masih berjalan; file tersimpan dan belum dianalisis.");
     },
   );
-  bot.command("bounty", async (ctx) => {
-    const s = await session(ctx);
-    const message = ctx.match.trim();
-    if (!message)
-      return ctx.reply("Kirim /bounty https://... atau tempel brief.");
-    await ctx.reply("Bounty diterima, agent mulai bekerja.");
-    void d.agent
-      .run(
-        String(s.id),
-        `Kerjakan workflow bounty make.fun untuk input berikut: ${message}. Ambil brief bila URL nyata, buat rencana, implementasikan deliverable di workspace, jalankan test, dan siapkan paket submit. Jangan submit eksternal.`,
-      )
-      .then((r) => ctx.reply(r.slice(0, 4000)))
-      .catch((e) =>
-        ctx.reply(`Task gagal: ${e instanceof Error ? e.message : "error"}`),
-      );
-  });
   bot.on("message:text", async (ctx) => {
     const fields = wizard.get(ctx.from.id);
     if (fields) {
