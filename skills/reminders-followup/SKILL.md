@@ -1,6 +1,6 @@
 ---
 name: reminders-followup
-description: Buat pengingat dan tindak lanjut berdasarkan waktu, zona waktu, dan status yang benar-benar terpantau.
+description: Create reminders and follow-ups based on time, time zone, and verified task status.
 triggers: [ingatkan, pengingat, jadwalkan, follow up, tindak lanjut, reminder, schedule]
 tools: [schedule, wait, memory_save, recall, ask_question]
 ---

@@ -26,14 +26,14 @@ describe("human question lifecycle", () => {
     try {
       const task = h.ask();
       const id = [...h.tools.questions.keys()][0]!;
-      expect(() => h.tools.answer(id, "other")).toThrow("Pilih jawaban");
+      expect(() => h.tools.answer(id, "other")).toThrow("Choose one of the available answers");
       expect(h.tools.questions.has(id)).toBe(true);
       h.tools.answer(id, "A");
       await expect(task).resolves.toMatchObject({ answer: "A" });
       expect(h.resolved()).toMatchObject([{ status: "answered", answer: "A" }]);
       expect(h.tools.questions.size).toBe(0);
       expect(h.wait.release).toHaveBeenCalledOnce();
-      expect(() => h.tools.answer(id, "B")).toThrow("kedaluwarsa");
+      expect(() => h.tools.answer(id, "B")).toThrow("expired");
     } finally { h.store.db.close(); }
   });
   it("marks a declared timeout default without claiming it was a user click", async () => {
@@ -50,7 +50,7 @@ describe("human question lifecycle", () => {
     const h = await harness();
     try {
       const task = h.ask();
-      const rejected = expect(task).rejects.toThrow("dibatalkan");
+      const rejected = expect(task).rejects.toThrow("cancelled");
       h.controller.abort();
       await rejected;
       expect(h.resolved()).toMatchObject([{ status: "cancelled" }]);

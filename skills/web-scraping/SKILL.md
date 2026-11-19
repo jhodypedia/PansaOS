@@ -1,6 +1,6 @@
 ---
 name: web-scraping
-description: Extract public web data into validated datasets with schema, pagination and provenance; ekstrak data web publik menjadi dataset tervalidasi, berpaginasi dan memiliki jejak asal.
+description: Extract public web data into validated datasets with schema, pagination, and provenance.
 triggers: [scrape, scraping, ekstrak, ekstraksi, crawling, ambil data, extract data, pagination, dataset, crawl]
 tools: [web_fetch, browser, http_request, write_file, bash, read_file]
 ---

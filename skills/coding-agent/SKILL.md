@@ -1,13 +1,13 @@
 ---
 name: coding-agent
-description: Engineer software and responsive interfaces with polished motion and real verification; rekayasa software dan aplikasi responsif, termasuk animasi yang dipoles serta verifikasi nyata.
+description: Engineer software and responsive interfaces with polished motion and real verification.
 triggers: [coding, code, build, implementasi, buat aplikasi, buatkan aplikasi, buat game, buatkan game, animate, animation, animations, animasi, refactor, deploy, landing page, pemrograman]
 tools: [read_file, list_files, read_skill, write_file, edit_file, bash, run_node, run_python, lint_test, browser]
 ---
 
 # Coding agent
 
-Domain: implementasi dan perbaikan software lintas stack. Untuk gameplay 3D baca threejs-game. Ikuti bahasa dan konvensi proyek pengguna; laporan kepada pengguna default Bahasa Indonesia.
+Domain: software implementation and repairs across stacks. For 3D gameplay read threejs-game. Follow the user's project language and conventions; default to English in user-facing reports unless the user requests another language.
 
 ## Langkah kerja
 
@@ -20,7 +20,7 @@ Domain: implementasi dan perbaikan software lintas stack. Untuk gameplay 3D baca
 7. Rancang motion yang punya tujuan: CSS transitions untuk interaksi sederhana, Framer Motion untuk state React, GSAP untuk timeline kompleks, canvas untuk partikel, WebGL/Three.js untuk 3D. Mulai dengan 120–200 ms untuk feedback, 220–400 ms untuk transisi, stagger 30–70 ms; sesuaikan dengan konteks dan easing ease-out saat masuk/ease-in saat keluar. Hindari animasi berlebihan.
 8. Targetkan 60fps: animasikan transform/opacity pada DOM, hindari animasi width/height/top/left dan layout thrash, kelompokkan pembacaan layout sebelum penulisan, batasi partikel, bersihkan timer/listener/rAF. Canvas/WebGL memperbarui objek di render loop tanpa setState per frame. Hormati prefers-reduced-motion dengan tampilan statis yang tetap informatif; pause saat halaman tersembunyi.
 9. Jalankan typecheck, lint, test relevan dan build sesuai script proyek. Bila tool/script tidak tersedia, laporkan sebagai belum dijalankan, bukan lulus. Uji perilaku yang berubah (happy path, input invalid, kegagalan API, auth bila relevan); perbaiki akar kegagalan. Periksa browser untuk UI, console error dan interaksi nyata; screenshot hanya bukti tambahan, bukan pengganti gameplay/interaksi.
-10. Tinjau diff, kriteria, dependensi dan artefak. Sertakan README dengan setup, konfigurasi, run, test, kontrol bila ada dan batasan nyata. Laporkan file, hasil, command + exit code, bukti dan blocker dalam Bahasa Indonesia. Commit hanya bila diminta, dengan message Inggris.
+10. Review the diff, completion criteria, dependencies, and artifacts. Include a README with setup, configuration, run and test instructions, controls when relevant, and actual limitations. Report files, results, commands, exit codes, evidence, and blockers in English by default. Commit only when requested.
 
 ## Standar kualitas dan larangan
 

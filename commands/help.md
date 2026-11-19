@@ -1,4 +1,4 @@
 ---
-description: Daftar command dan cara pakai
+description: List commands and usage
 ---
 Tampilkan daftar command.

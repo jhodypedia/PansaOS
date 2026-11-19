@@ -62,7 +62,7 @@ export function telegramMessages(markdownText: string, limit = 3600): { text: st
     });
   };
   walk($.root().contents());
-  if (!text.trim()) return [{ text: "Selesai", entities: [] }];
+  if (!text.trim()) return [{ text: "Done", entities: [] }];
   const chunks: { text: string; entities: MessageEntity[] }[] = [];
   for (let start = 0; start < text.length;) {
     let end = Math.min(start + limit, text.length);

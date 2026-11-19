@@ -1,6 +1,6 @@
 ---
 name: writing-summary
-description: Tulis, sunting, dan rangkum informasi dengan tujuan, audiens, nada, dan fakta yang terjaga.
+description: Write, edit, and summarize information while preserving purpose, audience, tone, and factual accuracy.
 triggers: [tulis, rangkum, ringkas, rewrite, edit tulisan, email draft, laporan, summarize, writing]
 tools: [read_file, write_file, edit_file, web_fetch, remember]
 ---

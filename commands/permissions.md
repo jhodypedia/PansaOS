@@ -1,4 +1,4 @@
 ---
-description: Tampilkan atau ubah mode izin session
+description: View session permissions or revoke them with /permissions reset
 ---
 Tampilkan izin session.

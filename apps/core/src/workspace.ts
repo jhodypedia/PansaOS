@@ -7,13 +7,13 @@ import type { Sandbox } from "./sandbox.js";
 export function applyEdits(raw: string, edits: { old: string; replacement: string }[]) {
   let next = raw;
   for (const edit of edits) {
-    if (!edit.old || next.split(edit.old).length !== 2) throw new Error("Teks harus cocok tepat satu kali; semua edit dibatalkan");
+    if (!edit.old || next.split(edit.old).length !== 2) throw new Error("Text must match exactly once; all edits cancelled");
     next = next.replace(edit.old, edit.replacement);
   }
   return next;
 }
 export function previewDiff(file: string, before: string, after: string) {
-  if (before === after) return "Tidak ada perubahan";
+  if (before === after) return "No changes";
   return `--- a/${file}\n+++ b/${file}\n@@ -1,${before.split("\n").length} +1,${after.split("\n").length} @@\n${before.split("\n").map(l => `-${l}`).join("\n")}\n${after.split("\n").map(l => `+${l}`).join("\n")}`;
 }
 async function files(root: string, base = ""): Promise<string[]> {
@@ -54,7 +54,7 @@ export class Checkpoints {
   }
   async changes(session: string, id: string) {
     const manifest = (await this.list(session)).find(m => m.id === id);
-    if (!manifest) throw new Error("Checkpoint tidak ditemukan");
+    if (!manifest) throw new Error("Checkpoint not found");
     const root = await this.sandbox.root(session), current = await files(root);
     const changed: string[] = [];
     for (const file of new Set([...current, ...manifest.files])) {

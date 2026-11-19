@@ -1,6 +1,6 @@
 ---
 name: troubleshooting
-description: Diagnosis masalah teknis dengan bukti, hipotesis teruji, dan langkah pemulihan yang aman.
+description: Diagnose technical problems using evidence, tested hypotheses, and verified recovery steps.
 triggers: [troubleshoot, troubleshooting, tidak berfungsi, error, gagal, diagnosis, perbaiki masalah]
 tools: [read_file, bash, web_fetch, web_search, doctor, git_status, git_diff]
 ---

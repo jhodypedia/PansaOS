@@ -5,7 +5,7 @@ export const TodoSchema = z.array(z.object({
   content: z.string().min(1).max(500),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]),
 })).max(100).refine(items => items.filter(i => i.status === "in_progress").length <= 1,
-  "Hanya satu todo boleh in_progress");
+  "Only one todo may be in_progress");
 export type Mode = "plan" | "build" | "ask";
 export class SessionState {
   constructor(public store: Store) {}
@@ -28,12 +28,12 @@ export const READ_TOOLS = new Set([
 
 export function enforceMode(mode: Mode, name: string, subtype?: string) {
   if (subtype === "explore" && !["read_file", "glob", "grep", "rg_grep", "list_files", "list_dir", "file_info"].includes(name))
-    throw new Error("mode Plan: hanya baca (Explore hanya tool baca codebase)");
+    throw new Error("Plan mode: read only (Explore can only read the codebase)");
   if ((mode === "plan" || subtype === "explore" || subtype === "plan") && !READ_TOOLS.has(name))
-    throw new Error("mode Plan: hanya baca");
+    throw new Error("Plan mode: read only");
 }
 
-export const COMPACTION_SECTIONS = ["Tujuan dan status", "Keputusan owner", "File dan keadaan terakhir", "Todo tertunda", "Belum diverifikasi"];
+export const COMPACTION_SECTIONS = ["Goal and status", "User decisions", "Files and current state", "Pending work", "Unverified"];
 export function structuredCompaction(parts: string[]) {
-  return COMPACTION_SECTIONS.map((name, i) => `## ${name}\n${parts[i] || "Belum dicatat"}`).join("\n\n");
+  return COMPACTION_SECTIONS.map((name, i) => `## ${name}\n${parts[i] || "Not recorded yet"}`).join("\n\n");
 }

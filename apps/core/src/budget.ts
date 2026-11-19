@@ -20,7 +20,7 @@ export class WorkBudget {
       () =>
         this.controller.abort(
           new Error(
-            `Batas waktu ${this.minutes} menit kerja terlampaui (waktu menunggu owner tidak dihitung)`,
+            `Task exceeded ${this.minutes} minutes of working time (time waiting for the user is excluded)`,
           ),
         ),
       Math.max(this.remaining, 1),

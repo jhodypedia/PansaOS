@@ -39,7 +39,7 @@ export function execute(
       if (signal.aborted) reject(signal.reason);
       else
         resolve(
-          `exit=${code}\n${output.slice(0, config.TOOL_OUTPUT_LIMIT)}${output.length >= config.TOOL_OUTPUT_LIMIT ? "\n[output dipotong]" : ""}`,
+          `exit=${code}\n${output.slice(0, config.TOOL_OUTPUT_LIMIT)}${output.length >= config.TOOL_OUTPUT_LIMIT ? "\n[output truncated]" : ""}`,
         );
     });
   });
@@ -102,7 +102,7 @@ export class Sandbox {
       const result = await execute("docker", ["exec", name, "bash", "-c", script], combined);
       const cwd = result.match(/^cwd=(.*)$/m)?.[1];
       if (cwd) await fs.writeFile(path.join(home, "shell-state.json"), JSON.stringify({ cwd, updated: new Date().toISOString() }));
-      return `${result.replace(/^exit=0\n/, "")}${reset ? "\nState shell ter-reset karena container sebelumnya berhenti." : ""}`;
+      return `${result.replace(/^exit=0\n/, "")}${reset ? "\nShell state was reset because the previous container stopped." : ""}`;
     } catch (e) {
       await this.kill(session);
       throw e;

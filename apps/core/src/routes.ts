@@ -29,7 +29,7 @@ export async function routes(
   );
   app.patch("/api/tools/:name", async (req) => {
     const { name } = req.params as { name: string };
-    if (!tools.registry.has(name)) throw new Error("Tool tidak ditemukan");
+    if (!tools.registry.has(name)) throw new Error("Tool not found");
     const b = z.object({ enabled: z.boolean() }).parse(req.body);
     store.set(`tool.${name}`, String(b.enabled));
     return { ok: true };
@@ -47,7 +47,7 @@ export async function routes(
     const { CronExpressionParser } = await import("cron-parser");
     CronExpressionParser.parse(b.cron);
     if (!store.get("SELECT id FROM sessions WHERE id=?", b.session_id))
-      throw Object.assign(new Error("Session tidak ditemukan"), {
+      throw Object.assign(new Error("Session not found"), {
         statusCode: 404,
       });
     const id = randomBytes(9).toString("hex");
@@ -111,15 +111,15 @@ export async function routes(
   app.put("/api/sessions/:id/workspace", async (req, reply) => {
     const id = (req.params as { id: string }).id;
     if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip) || req.headers.origin)
-      return reply.code(403).send({ error: "Pengaturan direktori CLI hanya tersedia melalui API lokal" });
-    if (config.EXEC_MODE !== "host") return reply.code(409).send({ error: "Direktori per session hanya tersedia di mode host" });
-    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session tidak ditemukan" });
+      return reply.code(403).send({ error: "CLI workspace configuration is only available through the local API" });
+    if (config.EXEC_MODE !== "host") return reply.code(409).send({ error: "Per-session directories are only available in host mode" });
+    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session not found" });
     const { directory } = z.object({ directory: z.string().min(1).max(4096) }).parse(req.body);
     const target = await fs.realpath(path.resolve(directory)).catch(() => null);
-    if (!target || !(await fs.stat(target).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: "Direktori proyek tidak ditemukan" });
+    if (!target || !(await fs.stat(target).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: "Project directory not found" });
     const allowed = await Promise.all(config.workspaceAllowlist.map((root) => fs.realpath(root).catch(() => null)));
     if (!isWithinAllowlist(target, allowed.filter((root): root is string => Boolean(root))))
-      return reply.code(403).send({ error: "Direktori tidak ada dalam WORKSPACE_ALLOWLIST" });
+      return reply.code(403).send({ error: "Directory is not in WORKSPACE_ALLOWLIST" });
     tools.sandbox.setRoot(id, target);
     return { directory: target };
   });
@@ -133,16 +133,16 @@ export async function routes(
         String((req.query as { path?: string }).path ?? "."),
       );
     } catch {
-      return reply.code(400).send({ error: "Path di luar workspace ditolak" });
+      return reply.code(400).send({ error: "Paths outside the workspace are blocked" });
     }
     const stat = await fs.stat(p).catch(() => null);
-    if (!stat) return reply.code(404).send({ error: "File tidak ditemukan" });
+    if (!stat) return reply.code(404).send({ error: "File not found" });
     if (stat.isDirectory())
       return (await fs.readdir(p, { withFileTypes: true })).map((f) => ({
         name: f.name,
         directory: f.isDirectory(),
       }));
-    if (stat.size > 20e6) throw new Error("File terlalu besar");
+    if (stat.size > 20e6) throw new Error("File is too large");
     return {
       name: path.basename(p),
       content: (await fs.readFile(p)).toString("base64"),
@@ -151,27 +151,13 @@ export async function routes(
   app.post("/api/sessions/:id/upload", async (req) => {
     const root = await tools.sandbox.root((req.params as { id: string }).id),
       file = await req.file();
-    if (!file) throw new Error("File diperlukan");
+    if (!file) throw new Error("A file is required");
     const dest = await safePath(root, path.basename(file.filename));
     await fs.writeFile(dest, await file.toBuffer());
     return { path: path.basename(dest) };
   });
   app.patch("/api/providers/:id", async (req) => {
-    const id = (req.params as { id: string }).id;
-    const b = z
-      .object({
-        enabled: z.boolean().optional(),
-        priority: z.number().int().optional(),
-      })
-      .parse(req.body);
-    if (b.enabled !== undefined)
-      store.run(
-        "UPDATE providers SET enabled=? WHERE id=?",
-        Number(b.enabled),
-        id,
-      );
-    if (b.priority !== undefined)
-      store.run("UPDATE providers SET priority=? WHERE id=?", b.priority, id);
+    providers.update((req.params as { id: string }).id, req.body);
     return { ok: true };
   });
   app.put("/api/memory/:id", async (req) => {
@@ -243,7 +229,7 @@ export async function routes(
                 return false;
               }
             },
-            { message: "Zona waktu IANA tidak valid" },
+            { message: "Invalid IANA time zone" },
           )
           .optional(),
       })
@@ -266,7 +252,7 @@ export async function routes(
           void agent.run(String(s.session_id), String(s.prompt)).then(result => tools.send(`Pengingat: ${result}`)).catch((e) => agent.fail(String(s.session_id), e));
           started++;
         }
-      } catch (error) { store.event("error", String(s.session_id), { error: `Jadwal ${s.id} gagal: ${error instanceof Error ? error.message : "cron tidak valid"}` }); }
+      } catch (error) { store.event("error", String(s.session_id), { error: `Schedule ${s.id} failed: ${error instanceof Error ? error.message : "invalid cron expression"}` }); }
     }
     for (const p of providers.list())
       if (Number(p.cooldown_until) > 0 && Number(p.cooldown_until) < Date.now())

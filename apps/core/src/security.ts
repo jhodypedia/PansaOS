@@ -32,7 +32,7 @@ export function decrypt(value: string, master: string): string {
 export const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export const equal = (a: string, b: string) =>
   timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
-export const mask = (s: string) => (s ? `sk-…${s.slice(-3)}` : "tanpa key");
+export const mask = (s: string) => (s ? `sk-…${s.slice(-3)}` : "no key");
 export function isWithinAllowlist(target: string, roots: string[]): boolean {
   return roots.some((root) => {
     const relative = path.relative(root, target);
@@ -52,14 +52,14 @@ export async function safePath(root: string, input: string): Promise<string> {
     resolved = path.resolve(base, input);
   if (resolved !== base && !resolved.startsWith(base + path.sep))
     throw new Error(
-      `Path di luar workspace ditolak (workspace session ini: ${path.basename(base)}; pakai path relatif, contoh: connect-body.json)`,
+      `Path outside the workspace is blocked (session workspace: ${path.basename(base)}; use a relative path, such as connect-body.json)`,
     );
   let cursor = resolved;
   while (true) {
     try {
       const real = await fs.realpath(cursor);
       if (real !== base && !real.startsWith(base + path.sep))
-        throw new Error("Symlink keluar workspace ditolak");
+        throw new Error("Symlinks outside the workspace are blocked");
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -101,13 +101,13 @@ export async function checkURL(
     url.username ||
     url.password
   )
-    throw new Error("URL HTTP(S) tanpa userinfo diperlukan");
+    throw new Error("An HTTP(S) URL without embedded credentials is required");
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const ips = isIP(host)
     ? [{ address: host }]
     : await lookup(host, { all: true });
   if (!ips.length || (!allowPrivate && ips.some((i) => privateIP(i.address))))
-    throw new Error("Jaringan privat/metadata diblokir");
+    throw new Error("Private networks and metadata endpoints are blocked");
   return url;
 }
 export async function safeFetch(
@@ -128,7 +128,7 @@ export async function safeFetch(
     await response.body?.cancel();
     url = next;
   }
-  throw new Error("Redirect terlalu banyak");
+  throw new Error("Too many redirects");
 }
 export async function limitedBody(
   response: Response,
@@ -143,7 +143,7 @@ export async function limitedBody(
       const { done, value } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > max) throw new Error("Respons melebihi batas ukuran");
+      if (size > max) throw new Error("Response exceeds the size limit");
       chunks.push(value);
     }
   } finally {

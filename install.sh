@@ -6,31 +6,31 @@ for arg in "$@"; do
   case "$arg" in
     --service) SERVICE=true ;;
     -h|--help) printf 'Usage: install.sh [--service]\n'; exit 0 ;;
-    *) printf 'Argumen tidak dikenal: %s\n' "$arg" >&2; exit 2 ;;
+    *) printf 'Unknown argument: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
 
 if [[ "$(uname -s)" != Linux ]]; then
-  printf 'Installer VPS saat ini mendukung Linux.\n' >&2
+  printf 'The VPS installer currently supports Linux.\n' >&2
   exit 1
 fi
 if [[ "$SERVICE" == true ]] && { ! command -v systemctl >/dev/null 2>&1 || ! command -v systemd-analyze >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; }; then
-  printf 'Mode --service dengan isolasi direktori memerlukan systemd aktif.\n' >&2
+  printf 'The --service option requires an active systemd installation.\n' >&2
   exit 1
 fi
 if [[ "$SERVICE" == true && "${PANSA_NO_START:-0}" != 1 ]] && [[ $(id -u) -ne 0 ]]; then
-  printf 'Perlu sudo untuk memasang systemd unit. Jalankan sudo %s --service\n' "$0" >&2
+  printf 'Installing a systemd service requires sudo. Run sudo %s --service\n' "$0" >&2
   exit 1
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  printf 'Node.js >=20.19 dibutuhkan. Instal Node.js 22 LTS dari https://nodejs.org/ lalu jalankan ulang.\n' >&2
+  printf 'Node.js >=20.19 is required. Install Node.js 22 LTS from https://nodejs.org/ and try again.\n' >&2
   exit 1
 fi
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])')
 NODE_MINOR=$(node -p 'Number(process.versions.node.split(".")[1])')
 if (( NODE_MAJOR < 20 || (NODE_MAJOR == 20 && NODE_MINOR < 19) )); then
-  printf 'Node.js >=20.19 dibutuhkan (disarankan Node 22 LTS); versi aktif: %s\n' "$(node -v)" >&2
+  printf 'Node.js >=20.19 is required (Node 22 LTS recommended); current version: %s\n' "$(node -v)" >&2
   exit 1
 fi
 
@@ -44,7 +44,7 @@ else
 fi
 TARGET_USER=${PANSA_SERVICE_USER:-${SUDO_USER:-$(id -un)}}
 if [[ "$SERVICE" == true && "$TARGET_USER" == root ]]; then
-  printf 'Service harus memakai akun non-root. Jalankan sudo dari akun user atau tetapkan PANSA_SERVICE_USER.\n' >&2
+  printf 'The service must use a non-root account. Run sudo from a user account or set PANSA_SERVICE_USER.\n' >&2
   exit 1
 fi
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
@@ -57,7 +57,7 @@ mkdir -p "$PANSA_HOME/workspace"
 mkdir -p "$PANSA_HOME/skills" "$PANSA_HOME/plugins"
 if [[ -d "$PREFIX/skills" ]]; then rsync -a --ignore-existing "$PREFIX/skills/" "$PANSA_HOME/skills/"; fi
 if ! command -v rsync >/dev/null 2>&1; then
-  printf 'rsync diperlukan untuk menyalin instalasi.\n' >&2
+  printf 'rsync is required to copy the installation.\n' >&2
   exit 1
 fi
 STAGE=$(mktemp -d "$(dirname "$PREFIX")/.pansaos-stage.XXXXXX")
@@ -104,7 +104,7 @@ if [[ -e "$PREFIX" ]]; then
 fi
 if ! mv "$STAGE" "$PREFIX"; then
   if [[ -n "$BACKUP" ]]; then mv "$BACKUP" "$PREFIX"; fi
-  printf 'Gagal mengaktifkan build baru; instalasi sebelumnya dipertahankan.\n' >&2
+  printf 'Could not activate the new build; the previous installation was preserved.\n' >&2
   exit 1
 fi
 STAGE=$(mktemp -d "$(dirname "$PREFIX")/.pansaos-failed.XXXXXX")
@@ -135,13 +135,13 @@ if [[ $(id -u) -eq 0 && "$TARGET_USER" != root ]]; then
   chown -R "$TARGET_USER":"$(id -gn "$TARGET_USER")" "$PANSA_HOME"
   chown "$TARGET_USER":"$(id -gn "$TARGET_USER")" "$ENV_FILE"
 fi
-case ":$PATH:" in *":$BIN_DIR:"*) ;; *) printf 'Tambahkan %s ke PATH untuk menggunakan pansa.\n' "$BIN_DIR" ;; esac
+case ":$PATH:" in *":$BIN_DIR:"*) ;; *) printf 'Add %s to PATH to use pansa.\n' "$BIN_DIR" ;; esac
 
 if [[ "$SERVICE" == true ]]; then
   UNIT_DIR=${PANSA_UNIT_DIR:-/etc/systemd/system}
   mkdir -p "$UNIT_DIR"
   if [[ ! -w "$UNIT_DIR" && $(id -u) -ne 0 ]]; then
-    printf 'Perlu sudo untuk memasang systemd unit. Jalankan sudo %s --service\n' "$0" >&2
+    printf 'Installing a systemd service requires sudo. Run sudo %s --service\n' "$0" >&2
     exit 1
   fi
   WORKSPACE_DIR_VALUE=$(sed -n 's/^WORKSPACE_DIR=//p' "$ENV_FILE" | tail -n 1)
@@ -156,7 +156,7 @@ if [[ "$SERVICE" == true ]]; then
     [[ -n "$allowed_dir" ]] || continue
     allowed_dir=$(realpath -m "$allowed_dir")
     if [[ ! -d "$allowed_dir" ]]; then
-      printf 'Direktori yang diizinkan tidak ditemukan: %s\n' "$allowed_dir" >&2
+      printf 'Allowed directory not found: %s\n' "$allowed_dir" >&2
       exit 1
     fi
     if [[ ! " ${BIND_DIRS[*]} " == *" $allowed_dir "* ]]; then BIND_DIRS+=("$allowed_dir"); fi
@@ -212,16 +212,16 @@ EOF
     systemctl daemon-reload
     systemctl enable pansa.service
     if ! systemctl restart pansa.service; then
-      printf 'Service gagal start; mengembalikan instalasi sebelumnya.\n' >&2
+      printf 'Service failed to start; restoring the previous installation.\n' >&2
       exit 1
     fi
     sleep 2
     if ! systemctl is-active --quiet pansa.service; then
-      printf 'Service tidak aktif setelah update; mengembalikan instalasi sebelumnya.\n' >&2
+      printf 'Service is inactive after the update; restoring the previous installation.\n' >&2
       exit 1
     fi
   fi
 fi
 if [[ -n "$BACKUP" ]]; then rm -rf "$BACKUP"; fi
 BACKUP=""
-printf 'Pansa terpasang di %s; PANSA_HOME=%s\n' "$PREFIX" "$PANSA_HOME"
+printf 'Pansa installed at %s; PANSA_HOME=%s\n' "$PREFIX" "$PANSA_HOME"

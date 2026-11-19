@@ -1,6 +1,6 @@
 ---
 name: web-browsing
-description: Jelajahi web publik dengan aman, buka sumber asli dan laporkan bukti serta ketidakpastian.
+description: Browse the public web, consult original sources, and report evidence and uncertainty.
 triggers: [cari di web, buka website, browse, browsing, website, telusuri, internet]
 tools: [web_search, web_fetch, browser]
 ---

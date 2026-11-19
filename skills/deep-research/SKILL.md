@@ -1,6 +1,6 @@
 ---
 name: deep-research
-description: Research questions using primary evidence, verified citations and conflict analysis; teliti pertanyaan memakai bukti primer, kutipan terverifikasi dan analisis konflik sumber.
+description: Research questions using primary evidence, verified citations, and source conflict analysis.
 triggers: [research, riset, teliti, bandingkan, compare, investigate, cari sumber, penelitian, primary sources, literature]
 tools: [web_fetch, browser, remember, write_file, read_skill, http_request]
 ---

@@ -1,6 +1,6 @@
 ---
 name: bug-report
-description: Produce reproducible bug reports with defensible impact, proof and retest; tulis laporan bug yang dapat direproduksi, berdampak terukur, disertai PoC dan uji ulang.
+description: Produce reproducible bug reports with defensible impact, evidence, and verification.
 triggers: [bug report, laporan bug, laporkan bug, vulnerability, kerentanan, reproduce, poc, security finding]
 tools: [read_file, write_file, browser, bash, web_fetch, http_request]
 ---

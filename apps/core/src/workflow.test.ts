@@ -26,10 +26,10 @@ describe("permission modes", () => {
       tools.state.set(session, "mode", "plan");
       await writeFile(path.join(dir, "existing.txt"), "original");
       const ctx = { session, signal: AbortSignal.timeout(3000), depth: 0 };
-      await expect(tools.call("write_file", { path: "existing.txt", content: "changed" }, ctx)).rejects.toThrow("mode Plan: hanya baca");
+      await expect(tools.call("write_file", { path: "existing.txt", content: "changed" }, ctx)).rejects.toThrow("Plan mode: read only");
       expect(await readFile(path.join(dir, "existing.txt"), "utf8")).toBe("original");
       expect(await tools.call("read_file", { path: "existing.txt" }, ctx)).toBe("original");
-      await expect(tools.call("bash", { command: "touch forbidden" }, ctx)).rejects.toThrow("mode Plan: hanya baca");
+      await expect(tools.call("bash", { command: "touch forbidden" }, ctx)).rejects.toThrow("Plan mode: read only");
     } finally { db.db.close(); await rm(dir, { recursive: true, force: true }); }
   });
   it("runs host shell without Docker and preserves cwd across calls", async () => {
@@ -48,7 +48,7 @@ describe("permission modes", () => {
   });
   it("blocks writes and shell in Plan and Explore; permits reads", () => {
     for (const tool of ["write_file", "bash", "multi_edit", "remote__write", "git_commit"])
-      expect(() => enforceMode("plan", tool)).toThrow("mode Plan: hanya baca");
+      expect(() => enforceMode("plan", tool)).toThrow("Plan mode: read only");
     expect(() => enforceMode("build", "write_file", "explore")).toThrow();
     for (const tool of ["read_file", "glob", "grep", "file_outline"])
       expect(() => enforceMode("plan", tool)).not.toThrow();
@@ -63,7 +63,7 @@ describe("atomic multi-edit", () => {
       await expect((async () => {
         const next = applyEdits(await readFile(file, "utf8"), [{ old: "a = 1", replacement: "a = 3" }, { old: "missing", replacement: "bad" }]);
         await writeFile(file, next);
-      })()).rejects.toThrow("semua edit dibatalkan");
+      })()).rejects.toThrow("all edits cancelled");
       expect(await readFile(file, "utf8")).toBe(original);
       expect(applyEdits(original, [{ old: "a = 1", replacement: "a = 3" }])).toContain("a = 3");
     } finally { await rm(dir, { recursive: true, force: true }); }

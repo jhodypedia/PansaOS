@@ -12,7 +12,7 @@ const env = z
     PUBLIC_URL: z.string().url().default("http://localhost:3000"),
     MASTER_KEY: z
       .string()
-      .regex(/^[a-fA-F0-9]{64}$/, "MASTER_KEY harus hex 32 byte"),
+      .regex(/^[a-fA-F0-9]{64}$/, "MASTER_KEY must be a 32-byte hexadecimal value"),
     DASH_TOKEN: z.string().min(24),
     PANSA_HOME: z.string().default(path.join(os.homedir(), ".pansa")),
     BOT_TOKEN: z.string().default(""),

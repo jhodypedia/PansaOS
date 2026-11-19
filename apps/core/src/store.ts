@@ -74,6 +74,12 @@ export class Store {
     if (!hasMigration(4)) this.db.transaction(() => {
       this.db.exec("ALTER TABLE memory ADD COLUMN profile_doc TEXT; INSERT INTO migrations(version) VALUES(4);");
     })();
+    if (!hasMigration(5)) this.db.transaction(() => {
+      this.db.exec("ALTER TABLE providers ADD COLUMN max_output_tokens INTEGER NOT NULL DEFAULT 4096; ALTER TABLE providers ADD COLUMN context_window INTEGER NOT NULL DEFAULT 32000; ALTER TABLE providers ADD COLUMN timeout_ms INTEGER NOT NULL DEFAULT 120000; INSERT INTO migrations(version) VALUES(5);");
+    })();
+    if (!hasMigration(6)) this.db.transaction(() => {
+      this.db.exec("ALTER TABLE providers ADD COLUMN custom_headers TEXT NOT NULL DEFAULT ''; INSERT INTO migrations(version) VALUES(6);");
+    })();
   }
   all(sql: string, ...params: (string | number | null)[]): Row[] {
     return this.db.prepare(sql).all(...params) as Row[];
@@ -103,7 +109,7 @@ export class Store {
     return event;
   }
   session(
-    title = "Session baru",
+    title = "New session",
     chat: number | null = null,
   ): Row & { id: string } {
     if (chat !== null) {
@@ -157,7 +163,7 @@ export class Store {
   async deleteMemory(id: string): Promise<boolean> {
     this.run("DELETE FROM memory WHERE id=?", id);
     const exists = this.get("SELECT id FROM memory WHERE id=?", id);
-    if (exists) throw new Error("Memori gagal dihapus");
+    if (exists) throw new Error("Memory could not be deleted");
     return true;
   }
   purgeSession(session: string): number {

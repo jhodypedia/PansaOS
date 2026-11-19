@@ -7,21 +7,21 @@ describe("Telegram interaction cards", () => {
     const text = telegramMessages(questionCard({ question: "Pilih arah desain?", options: [{ label: "Jade", description: "Tenang dan elegan" }, { label: "Light", description: "Terang dan bersih" }], allow_free: true, default: "Jade" }))[0]!.text;
     expect(text).toContain("1. Jade");
     expect(text).toContain("Tenang dan elegan");
-    expect(text).toContain("jawaban Anda sendiri");
-    expect(text).toContain("otomatis memilih Jade");
+    expect(text).toContain("your own answer");
+    expect(text).toContain("automatically selects Jade");
   });
   it("keeps question and option text literal and states when free answers are disabled", () => {
     const text = telegramMessages(questionCard({ question: "Apakah **ini** cocok?", options: [{ label: "a_b", description: "Pilih `kode`" }, { label: "Tidak" }], allow_free: false }))[0]!.text;
     expect(text).toContain("**ini**");
     expect(text).toContain("a_b");
-    expect(text).not.toContain("jawaban Anda sendiri");
-    expect(text).toContain("task dihentikan");
+    expect(text).not.toContain("your own answer");
+    expect(text).toContain("task stops");
   });
   it("renders commands as code and reflects resolved question states", () => {
     const card = telegramMessages(approvalCard({ tool: "bash", args: { command: "printf 'hello'" } }))[0]!;
     expect(card.entities.some(entity => entity.type === "pre")).toBe(true);
     expect(card.text).toContain("printf 'hello'");
-    expect(resolvedQuestionCard({ question: "Pilih?", status: "default", answer: "A" })).toContain("PILIHAN OTOMATIS");
-    expect(resolvedQuestionCard({ question: "Pilih?", status: "expired" })).toContain("WAKTU HABIS");
+    expect(resolvedQuestionCard({ question: "Pilih?", status: "default", answer: "A" })).toContain("DEFAULT SELECTED");
+    expect(resolvedQuestionCard({ question: "Pilih?", status: "expired" })).toContain("TIMED OUT");
   });
 });

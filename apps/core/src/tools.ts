@@ -21,6 +21,7 @@ import { Skills } from "./skills.js";
 import type { Definition } from "./providers.js";
 import { SessionState, TodoSchema, enforceMode } from "./session-state.js";
 import { applyEdits, previewDiff, Checkpoints } from "./workspace.js";
+import { executionNotice, permissionRule, type PermissionScope } from "./permissions.js";
 import { Profile } from "./profile.js";
 
 const MAX_JSON_NODES = 400;
@@ -90,14 +91,27 @@ export class Tools {
   state: SessionState;
   registry = new Map<string, Tool>();
   pending = new Map<string, (ok: boolean) => void>();
+  private permissionGrants = new Map<string, Set<string>>();
+  private approvalScopes = new Map<string, { session: string; root: string; scope: PermissionScope }>();
+  approvalInfo(id: string) {
+    const scope = this.approvalScopes.get(id);
+    return { allowSession: Boolean(scope), scope: scope?.scope, root: scope?.root, notice: scope?.scope === "execution" ? executionNotice : undefined };
+  }
+  permissions(session: string) { return [...(this.permissionGrants.get(session) ?? [])].map(key => JSON.parse(key) as { root: string; scope: PermissionScope }); }
+  revokePermissions(session: string) {
+    this.permissionGrants.delete(session);
+    for (const [id, scope] of this.approvalScopes) if (scope.session === session) this.approvalScopes.delete(id);
+    this.store.run("UPDATE sessions SET auto_approve=0 WHERE id=?", session);
+    this.store.event("audit", session, { action: "permissions_revoked" });
+  }
   humanWait = new Map<string, { hold: () => void; release: () => void }>();
   questions = new Map<string, { session: string; question: string; options: string[]; details: { label: string; description: string }[]; allowFree: boolean; expiresAt: number; default?: string; answer: (answer: string) => void }>();
   spawnTask: (prompt: string, ctx: ToolContext, type?: "explore" | "plan" | "general") => Promise<unknown> =
     async () => {
-      throw new Error("Agent belum siap");
+      throw new Error("Agent is not ready");
     };
   send: (text: string, file?: string) => Promise<unknown> = async () => {
-    throw new Error("Telegram belum dikonfigurasi");
+    throw new Error("Telegram is not configured");
   };
   constructor(
     public store: Store,
@@ -145,13 +159,14 @@ export class Tools {
     ctx: ToolContext,
     force = false,
   ) {
-    if (
-      !force && !name.includes("__") && !["git_commit", "checkpoint_restore", "execute_plan", "git_branch"].includes(name) && this.store.get(
-        "SELECT auto_approve FROM sessions WHERE id=?",
-        ctx.session,
-      )?.auto_approve
-    )
-      return;
+    ctx.signal.throwIfAborted();
+    const rule = permissionRule(name, args, Boolean(this.registry.get(name)?.risky), force) ?? { label: `Tool ${name}`, alwaysAsk: false };
+    const root = await fs.realpath(await this.sandbox.root(ctx.session));
+    ctx.signal.throwIfAborted();
+    const session = this.store.get("SELECT auto_approve,strict FROM sessions WHERE id=?", ctx.session);
+    const strict = this.state.mode(ctx.session) === "ask" || Boolean(session?.strict);
+    const key = rule.scope ? JSON.stringify({ root, scope: rule.scope }) : "";
+    if (!rule.alwaysAsk && !strict && (session?.auto_approve || (key && this.permissionGrants.get(ctx.session)?.has(key)))) return;
     const id = randomUUID();
     this.store.run(
       "INSERT INTO approvals(id,session_id,tool,args) VALUES(?,?,?,?)",
@@ -161,6 +176,7 @@ export class Tools {
       JSON.stringify(args),
     );
     const wait = this.humanWait.get(ctx.session);
+    if (rule.scope && !rule.alwaysAsk && !strict) this.approvalScopes.set(id, { session: ctx.session, root, scope: rule.scope });
     wait?.hold();
     try {
       await new Promise<void>((resolve, reject) => {
@@ -168,9 +184,10 @@ export class Tools {
           clearTimeout(timer);
           ctx.signal.removeEventListener("abort", abort);
           this.pending.delete(id);
+          this.approvalScopes.delete(id);
           this.store.run("UPDATE approvals SET status='expired' WHERE id=?", id);
           this.store.event("audit", ctx.session, { action: "approval_closed", id, status: "expired" });
-          reject(new Error("Approval dibatalkan"));
+          reject(new Error("Approval cancelled"));
         };
         const timer = setTimeout(abort, 300000);
         ctx.signal.addEventListener("abort", abort, { once: true });
@@ -178,67 +195,75 @@ export class Tools {
           clearTimeout(timer);
           ctx.signal.removeEventListener("abort", abort);
           this.pending.delete(id);
+          this.approvalScopes.delete(id);
           this.store.event("audit", ctx.session, { action: "approval_closed", id, status: ok ? "approved" : "rejected" });
-          ok ? resolve() : reject(new Error("Tool ditolak admin"));
+          ok ? resolve() : reject(new Error("Tool denied by the user"));
         });
-        this.store.event("approval", ctx.session, { id, tool: name, args });
+        this.store.event("approval", ctx.session, { id, tool: name, args, scope: rule.scope, scopeLabel: rule.label, root, allowSession: this.approvalScopes.has(id), notice: rule.scope === "execution" ? executionNotice : undefined });
       });
     } finally {
       wait?.release();
     }
+    ctx.signal.throwIfAborted();
+    if (await fs.realpath(await this.sandbox.root(ctx.session)) !== root) throw new Error("Workspace changed while awaiting approval; request permission for the new directory");
   }
-  decide(id: string, ok: boolean) {
-    if (!this.pending.has(id)) throw new Error("Approval sudah kedaluwarsa");
+  decide(id: string, ok: boolean, duration: "once" | "session" = "once") {
+    if (!this.pending.has(id)) throw new Error("Approval has expired");
+    const scope = this.approvalScopes.get(id);
+    if (duration === "session") {
+      if (!ok || !scope) throw new Error("This action only supports one-time approval");
+      const grants = this.permissionGrants.get(scope.session) ?? new Set<string>();
+      grants.add(JSON.stringify({ root: scope.root, scope: scope.scope }));
+      this.permissionGrants.set(scope.session, grants);
+    }
     this.store.run(
       "UPDATE approvals SET status=? WHERE id=?",
       ok ? "approved" : "rejected",
       id,
     );
     this.pending.get(id)?.(ok);
-    this.store.event("audit", null, { action: "approval", id, approved: ok });
+    this.store.event("audit", scope?.session ?? null, { action: "approval", id, approved: ok, duration, scope: scope?.scope });
   }
   answer(id: string, value: string) {
     const pending = this.questions.get(id);
-    if (!pending) throw new Error("Pertanyaan sudah kedaluwarsa");
-    if (!value.trim() || value.length > 4000) throw new Error("Jawaban tidak valid");
+    if (!pending) throw new Error("Question has expired");
+    if (!value.trim() || value.length > 4000) throw new Error("Invalid answer");
     pending.answer(value);
   }
   async call(name: string, input: unknown, ctx: ToolContext): Promise<string> {
     ctx.signal.throwIfAborted();
     const tool = this.registry.get(name);
     if (!tool || this.store.setting(`tool.${name}`, "true") === "false")
-      throw new Error("Tool tidak tersedia");
+      throw new Error("Tool is unavailable");
     const args = tool.schema.parse(input) as Record<string, unknown>;
-    if (["bash", "shell", "sandbox_exec", "run_node", "run_python"].includes(name) && /\bgit\b[^\n;]*\bcommit\b/.test(String(args.command ?? args.code))) throw new Error("Gunakan git_commit agar diff lengkap dan approval wajib ditampilkan");
+    if (["bash", "shell", "sandbox_exec", "run_node", "run_python"].includes(name) && /\bgit\b[^\n;]*\bcommit\b/.test(String(args.command ?? args.code))) throw new Error("Use git_commit to show the complete diff and request approval");
     if (["bash", "shell", "sandbox_exec"].includes(name) && /\bgit\s+(?:[^;\n]*\s)?push\b/.test(String(args.command))) {
       const last = this.store.get("SELECT payload FROM messages WHERE session_id=? AND json_extract(payload,'$.role')='user' ORDER BY id DESC LIMIT 1", ctx.session);
-      if (!last || !/\bpush\b/i.test(String(JSON.parse(String(last.payload)).content))) throw new Error("git push membutuhkan perintah eksplisit owner");
+      if (!last || !/\bpush\b/i.test(String(JSON.parse(String(last.payload)).content))) throw new Error("git push requires an explicit user instruction");
     }
     const mode = this.state.mode(ctx.session);
     enforceMode(mode, name, ctx.subtype);
     if (["write_file", "edit_file", "replace_text", "multi_edit"].includes(name)) {
       const changed = this.state.get<string[]>(ctx.session, "changed_files", []);
       if (changed.length === 2 && !changed.includes(String(args.path))) {
-        const checkpoint = await this.checkpoints.create(ctx.session, "Sebelum perubahan multi-file berikutnya");
+        const checkpoint = await this.checkpoints.create(ctx.session, "Before the next multi-file change");
         this.store.event("progress", ctx.session, { text: `Checkpoint: ${checkpoint.name}`, checkpoint });
       }
     }
     const commandText = String(args.command ?? (["git", "npm", "lint_test"].includes(name) ? (args.args as string[] | undefined)?.join(" ") : ""));
-    if ((name === "git" || ["bash", "shell", "sandbox_exec"].includes(name)) && /\bgit\b[^\n;]*\bcommit\b/.test(commandText)) throw new Error("Gunakan git_commit agar diff lengkap dan approval wajib ditampilkan");
+    if ((name === "git" || ["bash", "shell", "sandbox_exec"].includes(name)) && /\bgit\b[^\n;]*\bcommit\b/.test(commandText)) throw new Error("Use git_commit to show the complete diff and request approval");
     if ((name === "git" || name === "bash" || name === "shell" || name === "sandbox_exec") && /\bgit\s+(?:[^;\n]*\s)?push\b/.test(commandText)) {
       const last = this.store.get("SELECT payload FROM messages WHERE session_id=? AND json_extract(payload,'$.role')='user' ORDER BY id DESC LIMIT 1", ctx.session);
-      if (!last || !/\bpush\b/i.test(String(JSON.parse(String(last.payload)).content))) throw new Error("git push membutuhkan perintah eksplisit owner");
+      if (!last || !/\bpush\b/i.test(String(JSON.parse(String(last.payload)).content))) throw new Error("git push requires an explicit user instruction");
     }
-    const destructive = /\brm\s+[^\n]*(?:-rf|-fr)|\bgit\s+(?:push|commit|reset\s+--hard)\b/i.test(commandText);
-    const needsApproval = (mode === "ask" && !["ask_question", "todo_read", "todo_write"].includes(name)) || ["write_file", "edit_file", "replace_text", "multi_edit", "bash", "shell", "sandbox_exec", "run_node", "run_python", "lint_test", "unzip", "zip", "git", "npm", "download_file"].includes(name) || (name === "http_request" && String(args.method ?? "GET") !== "GET") || destructive;
-    if (needsApproval) await this.approval(name, args, ctx, destructive || (name === "http_request" && String(args.method ?? "GET") !== "GET"));
-    if (
-      tool.risky ||
-      /rm\s+.*-[a-z]*r|\b(sendTransaction|transfer|payment|withdraw)\b/i.test(
-        JSON.stringify(args),
-      )
-    )
-      if (!needsApproval) await this.approval(name, args, ctx, Boolean(tool.risky) || ["telegram_send", "notify"].includes(name));
+    const rule = permissionRule(name, args, Boolean(tool.risky));
+    const strict = mode === "ask" || Boolean(this.store.get("SELECT strict FROM sessions WHERE id=?", ctx.session)?.strict);
+    const needsApproval = rule?.alwaysAsk || (rule?.scope === "execution") || (strict && !["ask_question", "todo_read", "todo_write"].includes(name));
+    // Build mode authorizes the built-in, path-checked file editing tools. Arbitrary code needs execution permission.
+    const handlesApproval = name === "git_commit" || name === "checkpoint_restore" || (name === "git_branch" && Boolean(args.branch)) || (name === "browser" && Boolean(args.click || args.text));
+    if (needsApproval && !handlesApproval) await this.approval(name, args, ctx, rule?.alwaysAsk);
+    ctx.signal.throwIfAborted();
+    enforceMode(this.state.mode(ctx.session), name, ctx.subtype);
     const command =
       typeof args.command === "string" ? args.command.slice(0, 300) : undefined;
     const file = typeof args.path === "string" ? args.path.slice(0, 300) : undefined;
@@ -284,7 +309,7 @@ export class Tools {
           : fitJson(result, config.TOOL_OUTPUT_LIMIT), this.store.secrets);
       const output =
         raw.slice(0, config.TOOL_OUTPUT_LIMIT) +
-        (raw.length > config.TOOL_OUTPUT_LIMIT ? "\n[output dipotong]" : "");
+        (raw.length > config.TOOL_OUTPUT_LIMIT ? "\n[output truncated]" : "");
       const exitCode =
         name === "bash" || command
           ? Number(/^exit=(-?\d+)/.exec(raw)?.[1] ?? 0)
@@ -310,7 +335,7 @@ export class Tools {
       return output;
     } catch (e) {
       clearInterval(ticker);
-      const error = e instanceof Error ? e.message : "Tool gagal";
+      const error = e instanceof Error ? e.message : "Tool failed";
       this.store.event("tool", ctx.session, {
         tool: name,
         name,
@@ -357,7 +382,7 @@ export class Tools {
     });
     add("ask_question", "Ask a material decision with 2–4 choices. Wait up to five minutes; use declared default or stop.", z.object({ question: s.min(1).max(300), options: z.array(z.object({ label: s.min(1).max(60), description: s.max(180) })).min(2).max(4), allow_free: z.boolean().default(true), default: s.optional() }), async (a, c) => {
       const id = randomUUID(), options = a.options as { label: string; description: string }[];
-      if (a.default && !options.some(o => o.label === a.default)) throw new Error("Default harus salah satu pilihan");
+      if (a.default && !options.some(o => o.label === a.default)) throw new Error("The default must match an available option");
       const wait = this.humanWait.get(c.session);
       wait?.hold();
       const answer = await new Promise<string>((resolve, reject) => {
@@ -365,17 +390,17 @@ export class Tools {
           clearTimeout(timer); this.questions.delete(id); c.signal.removeEventListener("abort", abort);
           this.store.event("progress", c.session, { kind: "question_resolved", id, question: a.question, status, answer });
         };
-        const abort = () => { cleanup("cancelled"); reject(new Error("Pertanyaan dibatalkan")); };
-        const timer = setTimeout(() => { cleanup(a.default ? "default" : "expired", a.default ? String(a.default) : undefined); a.default ? resolve(String(a.default)) : reject(new Error("Tidak ada jawaban dalam 5 menit; task dihentikan")); }, 300000);
+        const abort = () => { cleanup("cancelled"); reject(new Error("Question cancelled")); };
+        const timer = setTimeout(() => { cleanup(a.default ? "default" : "expired", a.default ? String(a.default) : undefined); a.default ? resolve(String(a.default)) : reject(new Error("No answer within 5 minutes; task stopped")); }, 300000);
         this.questions.set(id, { session: c.session, question: String(a.question), options: options.map(o => o.label), details: options, allowFree: Boolean(a.allow_free), expiresAt: Date.now() + 300000, default: a.default ? String(a.default) : undefined, answer: value => {
-          if (!a.allow_free && !options.some(o => o.label === value)) throw new Error("Pilih jawaban yang tersedia");
+          if (!a.allow_free && !options.some(o => o.label === value)) throw new Error("Choose one of the available answers");
           cleanup("answered", value); resolve(value);
         } });
         c.signal.addEventListener("abort", abort, { once: true });
         this.store.event("progress", c.session, { kind: "question", id, question: a.question, options, allow_free: a.allow_free, default: a.default, text: a.question });
       }).finally(() => wait?.release());
       this.store.remember(String(a.question), answer, "decision", c.session);
-      this.store.event("progress", c.session, { kind: "answer", id, text: `Keputusan owner: ${answer}` });
+      this.store.event("progress", c.session, { kind: "answer", id, text: `User decision: ${answer}` });
       return { question: a.question, answer, source: "owner_or_declared_timeout_default" };
     });
     const normalize = (p: string) => {
@@ -400,7 +425,10 @@ export class Tools {
         ? `[ -x node_modules/.bin/prettier ] && node_modules/.bin/prettier --write -- ${quote(rel)}`
         : extension === ".py" ? `command -v ruff >/dev/null && ruff format -- ${quote(rel)}`
         : extension === ".go" ? `command -v gofmt >/dev/null && gofmt -w -- ${quote(rel)}` : "";
-      if (formatter) await this.sandbox.run(c.session, config.EXEC_MODE === "host" ? formatter : `cd /workspace; ${formatter}`, c.signal, 30000, true).catch(() => {});
+      const root = await fs.realpath(await this.sandbox.root(c.session));
+      const session = this.store.get("SELECT auto_approve,strict FROM sessions WHERE id=?", c.session);
+      const canFormat = this.state.mode(c.session) === "build" && !session?.strict && (session?.auto_approve || this.permissions(c.session).some(grant => grant.scope === "execution" && grant.root === root));
+      if (formatter && canFormat) await this.sandbox.run(c.session, config.EXEC_MODE === "host" ? formatter : `cd /workspace; ${formatter}`, c.signal, 30000, true).catch(() => {});
       const after = await fs.readFile(file, "utf8");
       const changed = this.state.get<string[]>(c.session, "changed_files", []);
       this.state.set(c.session, "changed_files", [...new Set([...changed, rel])]);
@@ -433,7 +461,7 @@ export class Tools {
       async (a, c) => {
         const file = await resolve(c, a.path);
         const stat = await fs.stat(file);
-        if (stat.size > 2e6) throw new Error("File terlalu besar");
+        if (stat.size > 2e6) throw new Error("File is too large");
         return fs.readFile(file, "utf8");
       },
     );
@@ -458,7 +486,7 @@ export class Tools {
         const file = await resolve(c, a.path),
           raw = await fs.readFile(file, "utf8");
         if (raw.split(String(a.old)).length !== 2)
-          throw new Error("Teks harus cocok tepat satu kali");
+          throw new Error("Text must match exactly once");
         await fs.writeFile(
           file,
           raw.replace(String(a.old), String(a.replacement)),
@@ -480,7 +508,7 @@ export class Tools {
     add("checkpoint_list", "List workspace checkpoints.", z.object({}), async (_a, c) => this.checkpoints.list(c.session));
     add("checkpoint_changes", "List files changed since a checkpoint with status and hashes.", z.object({ id: s.optional() }), async (a, c) => {
       const id = String(a.id ?? (await this.checkpoints.list(c.session))[0]?.id ?? "");
-      if (!id) throw new Error("Belum ada checkpoint di session ini");
+      if (!id) throw new Error("No checkpoint exists in this session");
       return this.checkpoints.changes(c.session, id);
     });
     add("checkpoint_restore", "Restore checkpoint after approval of all changed files.", z.object({ id: s }), async (a, c) => {
@@ -497,10 +525,10 @@ export class Tools {
     });
     add("git_commit", "Show full staged diff and proposed commit message, then wait for approval. Never pushes.", z.object({ message: s.min(1) }), async (a, c) => {
       const names = await shell({ command: "git diff --cached --name-only", fresh: false }, c);
-      if (/(^|\/)(\.env(?:\.[^/]*)?|[^/]*(?:private[_.-]?key|token|credentials)[^/]*|[^/]+\.pem)$/im.test(names)) throw new Error("Commit file secret ditolak");
+      if (/(^|\/)(\.env(?:\.[^/]*)?|[^/]*(?:private[_.-]?key|token|credentials)[^/]*|[^/]+\.pem)$/im.test(names)) throw new Error("Committing secret files is blocked");
       const diff = await shell({ command: "git diff --cached --no-ext-diff", fresh: false }, c);
-      if (diff.includes("[output dipotong]")) throw new Error("Diff terlalu besar; commit ditolak sampai diff lengkap bisa ditampilkan");
-      if (/-----BEGIN .*PRIVATE KEY|(?:sk-|gsk_|af_)[A-Za-z0-9_-]{12,}|(?:api[_-]?key|token|password)\s*[:=]\s*["'][^"']{12,}/i.test(diff)) throw new Error("Diff mengandung pola secret; commit ditolak");
+      if (diff.includes("[output truncated]") || diff.includes("[output dipotong]")) throw new Error("Diff is too large; the complete diff is required before committing");
+      if (/-----BEGIN .*PRIVATE KEY|(?:sk-|gsk_|af_)[A-Za-z0-9_-]{12,}|(?:api[_-]?key|token|password)\s*[:=]\s*["'][^"']{12,}/i.test(diff)) throw new Error("Potential secrets detected in the diff; commit blocked");
       await this.approval("git_commit", { message: a.message, diff }, c);
       return shell({ command: `git commit -m ${quote(String(a.message))}`, fresh: false }, c);
     });
@@ -533,9 +561,9 @@ export class Tools {
       async (a, c) => {
         const p = await resolve(c, a.path);
         if (p === (await this.sandbox.root(c.session)))
-          throw new Error("Root workspace tidak boleh dihapus");
+          throw new Error("The workspace root cannot be deleted");
         await fs.rm(p, { recursive: true });
-        return "Dihapus";
+        return "Deleted";
       },
     );
     add(
@@ -780,9 +808,9 @@ export class Tools {
       async (a, c) => this.profile.forgetMemory(String(a.query), c.session),
       true,
     );
-    add("memory_save", "Simpan fakta tahan lama lintas kanal dengan kategori dan asal percakapan.", z.object({ key: s.min(1).max(300), content: s.min(1).max(8000), category: z.enum(["fakta", "preferensi", "keputusan", "komitmen", "hubungan"]) }), async (a, c) => this.profile.saveMemory(String(a.category), String(a.key), String(a.content), c.session));
-    add("memory_forget", "Hapus memori yang cocok di profil global dan sesi ini, lalu verifikasi dokumen serta indeks.", z.object({ query: s.min(1).max(500) }), async (a, c) => this.profile.forgetMemory(String(a.query), c.session));
-    add("memory_explain", "Tampilkan kapan dan dari percakapan mana memori dipelajari.", z.object({ query: s }), async (a, c) => this.store.all("SELECT id,key,content,kind,category,source_type,source_session,created_at FROM memory WHERE (key LIKE ? OR content LIKE ?) AND (session_id IS NULL OR session_id=?) ORDER BY created_at DESC LIMIT 20", `%${String(a.query)}%`, `%${String(a.query)}%`, c.session));
+    add("memory_save", "Save durable information across channels with a category and source conversation.", z.object({ key: s.min(1).max(300), content: s.min(1).max(8000), category: z.enum(["fakta", "preferensi", "keputusan", "komitmen", "hubungan"]) }), async (a, c) => this.profile.saveMemory(String(a.category), String(a.key), String(a.content), c.session));
+    add("memory_forget", "Delete matching global and session memories, then verify documents and indexes.", z.object({ query: s.min(1).max(500) }), async (a, c) => this.profile.forgetMemory(String(a.query), c.session));
+    add("memory_explain", "Show when and from which conversation a memory was learned.", z.object({ query: s }), async (a, c) => this.store.all("SELECT id,key,content,kind,category,source_type,source_session,created_at FROM memory WHERE (key LIKE ? OR content LIKE ?) AND (session_id IS NULL OR session_id=?) ORDER BY created_at DESC LIMIT 20", `%${String(a.query)}%`, `%${String(a.query)}%`, c.session));
     add(
       "list_skills",
       "List installed skill metadata.",
@@ -796,7 +824,7 @@ export class Tools {
       z.object({ name: s }),
       async (a) => {
         const skill = (await this.skills.list()).find((x) => x.name === a.name);
-        if (!skill) throw new Error("Skill tidak ditemukan");
+        if (!skill) throw new Error("Skill not found");
         return skill.raw;
       },
     );
@@ -826,20 +854,20 @@ export class Tools {
       "Delegate independent subtask. Child gets its own workspace.",
       z.object({ prompt: s, type: z.enum(["explore", "plan", "general"]).default("general"), background: z.boolean().default(false) }),
       async (a, c) => {
-        if (c.depth > 0 && a.type !== "explore") throw new Error("Subagent hanya boleh membuat subagent explore");
+        if (c.depth > 0 && a.type !== "explore") throw new Error("Subagents may only create explore subagents");
         if (a.background) {
           const id = randomUUID();
           const task = { id, session: c.session, type: String(a.type), status: "running", since: new Date().toISOString(), summary: undefined as unknown };
           this.backgroundTasks.set(id, task);
           void this.spawnTask(String(a.prompt), c, a.type as "explore" | "plan" | "general").then(result => { task.status = "done"; task.summary = result; }).catch(error => { task.status = "error"; task.summary = String(error); });
-          return { task: id, status: "running", instruction: "Gunakan task_status untuk mengambil ringkasan; owner mendapat notifikasi saat selesai." };
+          return { task: id, status: "running", instruction: "Use task_status to retrieve the summary. The user will be notified when complete." };
         }
         return this.spawnTask(String(a.prompt), c, a.type as "explore" | "plan" | "general");
       },
     );
     add("task_status", "Read a background subagent's status and summary.", z.object({ id: s }), async (a, c) => {
       const task = this.backgroundTasks.get(String(a.id));
-      if (!task || task.session !== c.session) throw new Error("Task tidak ditemukan");
+      if (!task || task.session !== c.session) throw new Error("Task not found");
       return task;
     });
     add(
@@ -861,7 +889,7 @@ export class Tools {
           );
           c.signal.addEventListener("abort", abort, { once: true });
         });
-        return "Selesai menunggu";
+        return "Wait complete";
       },
     );
     add(

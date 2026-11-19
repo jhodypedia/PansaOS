@@ -1,5 +1,5 @@
 ---
-description: Review diff dan temuan sejak checkpoint
+description: Review changes and findings since the last checkpoint
 ---
 Laporkan status kerja sejak checkpoint terakhir. Wajib tepat tiga bagian:
 

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import http from "node:http";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
+import { providerPresets } from "./provider-presets.js";
 
 const home = path.resolve(process.env.PANSA_HOME ?? path.join(os.homedir(), ".pansa"));
 const envFile = path.join(home, ".env");
@@ -58,7 +59,7 @@ async function waitForCore() {
   while (Date.now() < deadline) {
     try { await fetch(`${base}/health`, { signal: AbortSignal.timeout(1000) }); return; } catch { await new Promise((resolve) => setTimeout(resolve, 300)); }
   }
-  throw new Error("Core tidak siap dalam 30 detik");
+  throw new Error("Core did not become ready within 30 seconds");
 }
 async function startCore() {
   try { await waitForCore(); return; } catch {}
@@ -84,7 +85,7 @@ async function sessionId(continueSession: boolean) {
 }
 async function socketCookie() {
   const response = await fetch(`${base}/api/auth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: env.DASH_TOKEN }) });
-  if (!response.ok) throw new Error("Autentikasi WebSocket gagal");
+  if (!response.ok) throw new Error("WebSocket authentication failed");
   return response.headers.get("set-cookie")?.split(";")[0] ?? "";
 }
 async function runPrompt(prompt: string, options: { yes?: boolean; plan?: boolean; interactive?: boolean; session?: string; askApproval?: (text: string) => Promise<string> } = {}) {
@@ -118,16 +119,19 @@ async function runPrompt(prompt: string, options: { yes?: boolean; plan?: boolea
       else if (event.type === "approval" && options.interactive) {
         const approvalId = String(event.data?.id);
         const question = options.askApproval ?? ((text: string) => rl!.question(text));
-        void question(`\nPersetujuan ${String(event.data?.tool)} ${JSON.stringify(event.data?.args)}? [y/N] `).then((answer) => request(`/api/approvals/${approvalId}`, { approved: /^y(es)?$/i.test(answer.trim()) }, "POST").then(() => {}));
+        void question(`\nApproval: ${String(event.data?.tool)} ${JSON.stringify(event.data?.args)}\n${String(event.data?.notice ?? "")}\n${event.data?.allowSession ? "[y] allow once · [s] allow for session · [N] deny" : "[y] allow once · [N] deny"}: `).then((answer) => {
+          const sessionGrant = event.data?.allowSession && /^s(ession)?$/i.test(answer.trim());
+          return request(`/api/approvals/${approvalId}`, { approved: Boolean(sessionGrant) || /^y(es)?$/i.test(answer.trim()), duration: sessionGrant ? "session" : "once" }, "POST").then(() => {});
+        }).catch(error => stdout.write(`\nApproval failed: ${error instanceof Error ? error.message : String(error)}\n`));
       } else if (event.type === "approval" && !options.interactive) {
         const approvalId = String(event.data?.id);
-        void request(`/api/approvals/${approvalId}`, { approved: false }, "POST").then(() => { stdout.write("\nPersetujuan diperlukan; task dibatalkan (gunakan terminal interaktif atau --yes).\n"); });
+        void request(`/api/approvals/${approvalId}`, { approved: false }, "POST").then(() => { stdout.write("\nApproval required; task cancelled. Use an interactive terminal, or --yes for routine actions.\n"); });
       } else if (event.type === "task" && event.data?.status !== "running") { finalStatus = String(event.data?.status); stdout.write(`\n\nStatus: ${finalStatus}\n`); resolve(); }
-      else if (event.type === "error") { stdout.write(`\nKesalahan: ${String(event.data?.error ?? "Task gagal")}\n`); finalStatus = "error"; resolve(); }
+      else if (event.type === "error") { stdout.write(`\nError: ${String(event.data?.error ?? "Task failed")}\n`); finalStatus = "error"; resolve(); }
     });
     ws.on("error", reject);
     ws.on("open", () => void request(`/api/sessions/${id}/message`, { prompt }).catch(reject));
-    ws.on("close", () => { if (!finalStatus) reject(new Error("WebSocket terputus sebelum task selesai")); });
+    ws.on("close", () => { if (!finalStatus) reject(new Error("WebSocket disconnected before the task finished")); });
   });
   await done.finally(() => { ws.close(); rl?.close(); });
   return finalStatus === "done" ? 0 : 1;
@@ -183,7 +187,7 @@ async function main() {
         res.writeHead(response.statusCode ?? 502, response.headers);
         response.pipe(res);
       });
-      upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end("Dashboard belum siap"); });
+      upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end("Dashboard is not ready yet"); });
       req.pipe(upstream);
     });
     proxy.on("upgrade", (req, client, head) => {
@@ -204,63 +208,82 @@ async function main() {
     return;
   }
   if (command === "doctor") { await startCore(); const id = await sessionId(false); await request(`/api/sessions/${id}/workspace`, { directory: process.cwd() }, "PUT"); console.log(JSON.stringify(await request(`/api/doctor?session=${id}`), null, 2)); return; }
-  if (command === "sessions") { await startCore(); const rows = await request("/api/sessions") as unknown as Record<string, unknown>[]; console.log(rows.map((row) => `${row.id} · ${row.title} · ${row.created_at}`).join("\n") || "Belum ada session."); return; }
+  if (command === "sessions") { await startCore(); const rows = await request("/api/sessions") as unknown as Record<string, unknown>[]; console.log(rows.map((row) => `${row.id} · ${row.title} · ${row.created_at}`).join("\n") || "No sessions yet."); return; }
   if (command === "provider" && args[args.indexOf(command) + 1] === "add") {
     await startCore(); const rl = createInterface({ input: stdin, output: stdout });
     try {
-      const name = await rl.question("Nama provider: "); const base_url = await rl.question("Base URL: "); const api_key = await secretQuestion(rl, "API key (input tersembunyi): "); const model = await rl.question("Model: ");
-      const saved = await request("/api/providers", { name, base_url, api_key, model });
-      const test = await request(`/api/providers/${encodeURIComponent(String(saved))}/test`) as unknown as { ok: boolean; latency: number };
-      console.log(test.ok ? `Provider tersimpan dan sehat (${test.latency} ms).` : "Provider tersimpan tetapi tes gagal.");
+      console.log(providerPresets.map((preset, index) => `${index + 1}. ${preset.name}`).join("\n"));
+      const choice = (await rl.question("Provider preset [1]: ")).trim() || "1";
+      const preset = providerPresets[Number(choice) - 1];
+      if (!preset) throw new Error("Choose a valid preset number");
+      const name = (await rl.question(`Connection name [${preset.name}]: `)).trim() || preset.name;
+      const base_url = (await rl.question(`API base URL [${preset.base_url}]: `)).trim() || preset.base_url;
+      const adapter = (await rl.question(`API protocol (openai/responses/anthropic) [${preset.adapter}]: `)).trim() || preset.adapter;
+      const api_key = await secretQuestion(rl, "API key (hidden; leave blank for unauthenticated endpoints): ");
+      const customHeadersText = await secretQuestion(rl, "Custom headers as JSON (hidden; leave blank for none): ");
+      const custom_headers = customHeadersText.trim() ? JSON.parse(customHeadersText) as Record<string, string> : {};
+      let model = (await rl.question(`Model ID [${preset.model || "enter ? to discover"}]: `)).trim() || preset.model;
+      if (model === "?") {
+        const result = await request("/api/providers/models", { name, base_url, api_key, adapter, custom_headers, model: "discovery" }) as unknown as { models: { id: string }[] };
+        console.log(result.models.map((item, index) => `${index + 1}. ${item.id}`).join("\n"));
+        const selection = (await rl.question("Model number or exact ID: ")).trim();
+        model = result.models[Number(selection) - 1]?.id ?? selection;
+      }
+      const priorityText = await rl.question("Fallback priority (lower first) [0]: ");
+      const payload = { name, base_url, api_key, adapter, custom_headers, model, priority: priorityText.trim() ? Number(priorityText) : 0 };
+      const test = await request("/api/providers/validate", payload) as unknown as { latency: number };
+      console.log(`Connection verified (${test.latency} ms).`);
+      await request("/api/providers", payload);
+      console.log("Provider saved with encrypted credentials. Advanced settings are available in the dashboard.");
     } finally { rl.close(); }
     return;
   }
   if (command === "telegram" && args[args.indexOf(command) + 1] === "setup") {
     const rl = createInterface({ input: stdin, output: stdout });
     try {
-      const token = await secretQuestion(rl, "Token bot Telegram (input tersembunyi): ");
-      if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token.trim())) throw new Error("Format token bot Telegram tidak valid");
-      const adminIds = await rl.question("UID admin Telegram (satu atau beberapa ID dipisahkan koma): ");
+      const token = await secretQuestion(rl, "Telegram bot token (hidden): ");
+      if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token.trim())) throw new Error("Invalid Telegram bot token format");
+      const adminIds = await rl.question("Telegram admin IDs (comma-separated): ");
       const ids = adminIds.split(",").map((id) => id.trim());
-      if (!ids.length || ids.some((id) => !/^\d+$/.test(id))) throw new Error("UID harus berupa ID numerik, dipisahkan koma");
+      if (!ids.length || ids.some((id) => !/^\d+$/.test(id))) throw new Error("Admin IDs must be comma-separated numbers");
       await saveTelegram(token, adminIds);
     } finally { rl.close(); }
-    try { execFileSync("sudo", ["-n", "systemctl", "restart", "pansa.service"], { stdio: "ignore" }); console.log("Bot disimpan terenkripsi oleh permission file 600; service dimulai ulang."); }
-    catch { console.log("Konfigurasi disimpan ke PANSA_HOME/.env (mode 600). Jalankan `pansa serve` atau mulai ulang pansa.service."); }
+    try { execFileSync("sudo", ["-n", "systemctl", "restart", "pansa.service"], { stdio: "ignore" }); console.log("Bot settings saved in a permission-protected file (600); service restarted."); }
+    catch { console.log("Settings saved to PANSA_HOME/.env (mode 600). Run `pansa serve` or restart pansa.service."); }
     return;
   }
   if (command === "run") {
-    const prompt = args[1]; if (!prompt) throw new Error('Gunakan: pansa run "prompt"');
+    const prompt = args[1]; if (!prompt) throw new Error('Usage: pansa run "prompt"');
     process.exitCode = await runPrompt(prompt, { yes: flag("--yes"), plan: flag("--plan"), interactive: stdin.isTTY }); return;
   }
-  if (command) throw new Error(`Perintah tidak dikenal: ${command}`);
+  if (command) throw new Error(`Unknown command: ${command}`);
   await startCore();
   let id = await sessionId(flag("--continue"));
   await request(`/api/sessions/${id}/workspace`, { directory: process.cwd() }, "PUT");
   const rl = createInterface({ input: stdin, output: stdout });
-  console.log(`Pansa aktif · ${process.cwd()} · /help untuk perintah`);
+  console.log(`Pansa is ready · ${process.cwd()} · /help for commands`);
   while (true) {
-    const line = (await rl.question("\nAnda › ")).trim();
+    const line = (await rl.question("\nYou › ")).trim();
     if (!line) continue;
     if (line === "/exit") break;
-    if (line === "/stop") { await request(`/api/sessions/${id}/stop`, {}, "POST"); console.log("Task dihentikan."); continue; }
-    if (line === "/new") { id = await sessionId(false); await request(`/api/sessions/${id}/workspace`, { directory: process.cwd() }, "PUT"); console.log("Session baru dimulai."); continue; }
+    if (line === "/stop") { await request(`/api/sessions/${id}/stop`, {}, "POST"); console.log("Task stopped."); continue; }
+    if (line === "/new") { id = await sessionId(false); await request(`/api/sessions/${id}/workspace`, { directory: process.cwd() }, "PUT"); console.log("New session started."); continue; }
     if (line === "/help") { console.log("/new /model /providers /memory /doctor /stop /exit"); continue; }
     if (line.startsWith("/continue")) {
       const requested = line.slice("/continue".length).trim();
-      if (!requested) { console.log("Gunakan /continue SESSION_ID (lihat `pansa sessions`)."); continue; }
+      if (!requested) { console.log("Use /continue SESSION_ID (see `pansa sessions`)."); continue; }
       const rows = await request("/api/sessions") as unknown as Record<string, unknown>[];
-      if (!rows.some((row) => row.id === requested)) { console.log("Session tidak ditemukan."); continue; }
+      if (!rows.some((row) => row.id === requested)) { console.log("Session not found."); continue; }
       id = requested; await fs.writeFile(path.join(home, "last-session"), id, { mode: 0o600 });
       await request(`/api/sessions/${id}/workspace`, { directory: process.cwd() }, "PUT");
-      console.log(`Melanjutkan session ${id}.`); continue;
+      console.log(`Continuing session ${id}.`); continue;
     }
     if (line === "/doctor") { console.log(JSON.stringify(await request(`/api/doctor?session=${id}`), null, 2)); continue; }
     if (line === "/providers") { console.log(JSON.stringify(await request("/api/providers"), null, 2)); continue; }
     if (line.startsWith("/memory")) { console.log(JSON.stringify(await request(`/api/memory?q=${encodeURIComponent(line.slice(7).trim())}&session=${encodeURIComponent(id)}`), null, 2)); continue; }
     if (/^(lupakan|forget)\s+/i.test(line)) {
       const result = await runPrompt(line, { interactive: true, session: id, askApproval: (text) => rl.question(text) });
-      if (result !== 0) console.log("Pastikan penghapusan terkonfirmasi oleh agent sebelum melanjutkan.");
+      if (result !== 0) console.log("Confirm that the assistant verified deletion before proceeding.");
       continue;
     }
     if (line.startsWith("/model")) {
@@ -268,9 +291,9 @@ async function main() {
       const providers = await request("/api/providers") as unknown as Record<string, unknown>[];
       if (!selected) { console.log(JSON.stringify(providers.map(({ id, name, model, enabled }) => ({ id, name, model, enabled })), null, 2)); continue; }
       const provider = providers.find((item) => item.id === selected || item.model === selected || item.name === selected);
-      if (!provider) { console.log("Provider/model tidak ditemukan."); continue; }
+      if (!provider) { console.log("Provider or model not found."); continue; }
       await request(`/api/sessions/${id}`, { auto_approve: false, pinned: String(provider.id), strict: false }, "PATCH");
-      console.log(`Model dikunci: ${String(provider.name)} · ${String(provider.model)}`);
+      console.log(`Model pinned: ${String(provider.name)} · ${String(provider.model)}`);
       continue;
     }
     await runPrompt(line, { interactive: true, session: id, askApproval: (text) => rl.question(text) });

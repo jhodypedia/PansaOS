@@ -1,6 +1,6 @@
 ---
 name: threejs-game
-description: Build playable responsive 3D games with measured game feel, smooth animation, full controls and gameplay evidence; bangun game 3D responsif yang dapat dimainkan, beranimasi halus, berkontrol lengkap serta memiliki bukti gameplay.
+description: Build playable responsive 3D games with measured game feel, smooth animation, complete controls, and gameplay evidence.
 triggers: [three.js, threejs, game, 3d, permainan, buatkan game, gameplay, webgl, animasi game]
 tools: [read_file, read_skill, write_file, edit_file, bash, browser, run_node, lint_test]
 ---

@@ -1,4 +1,4 @@
 ---
-description: Pilih plan, build, atau ask
+description: Choose Plan, Build, or Ask mode
 ---
 Tampilkan mode session.

@@ -17,7 +17,8 @@ import type { Agent } from "./agent.js";
 import { config } from "./config.js";
 import { telegramMessages } from "./telegram-format.js";
 import { approvalCard, questionCard, resolvedQuestionCard } from "./telegram-cards.js";
-const help = `**PANSA · ASISTEN PRIBADI ANDA**\n\nKirim pertanyaan, ide, atau tugas. Saya akan membantu Anda menyelesaikannya.\n\n**Percakapan**\n/new — Mulai sesi baru\n/stop — Hentikan task\n/status — Lihat status\n/tasks — Task yang aktif\n\n**Pengetahuan**\n/memory kata — Cari memori\n/forget fakta — Lupakan memori\n/skills — Keahlian yang tersedia\n\n**Workspace**\n/dashboard — Buka dashboard\n/providers — Kelola provider AI\n/model — Pilih model\n/autoapprove on|off — Atur persetujuan\n\nAnda juga dapat mengirim dokumen, foto, atau pesan suara.`;
+import { providerPresets } from "./provider-presets.js";
+const help = `**PANSA · YOUR PERSONAL ASSISTANT**\n\nSend a question, idea, or task. Let's get it done.\n\n**Conversation**\n/new — Start a new session\n/stop — Stop the current task\n/status — Check status\n/tasks — Active tasks\n\n**Knowledge**\n/memory query — Search memory\n/forget fact — Forget a memory\n/skills — Available skills\n\n**Workspace**\n/dashboard — Open dashboard\n/providers — Manage AI providers\n/model — Select a model\n/permissions — View or reset session permissions\n/autoapprove on|off — Manage automatic approvals\n\nYou can also send documents, photos, and voice messages.`;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const barText = (frame: number, done: boolean) => {
@@ -117,10 +118,12 @@ export async function startTelegram(d: Deps) {
     if (allowed(ctx)) return next();
   });
   const wizardUser = (ctx: Context) => {
-    if (!ctx.from) throw new Error("Pengirim tidak ditemukan");
+    if (!ctx.from) throw new Error("Sender not found");
     return ctx.from.id;
   };
   const wizard = new Map<number, string[]>();
+  const wizardAdapters = new Map<number, "openai" | "responses" | "anthropic">();
+  const wizardModels = new Map<number, string>();
   const questionMessages = new Map<string, { chat: number; message: number }[]>();
   const approvalMessages = new Map<string, { chat: number; message: number }[]>();
   const formattedEdit = async (ctx: Context, messageId: number, text: string, entities: MessageEntity[]) => {
@@ -141,9 +144,9 @@ export async function startTelegram(d: Deps) {
       else await ctx.reply(chunk.text, { entities: chunk.entities });
     }
   };
-  const animatedReply = async (ctx: Context, task: () => Promise<string>, label = "MEMPROSES") => {
+  const animatedReply = async (ctx: Context, task: () => Promise<string>, label = "WORKING") => {
     const startedAt = Date.now();
-    const msg = await ctx.reply(`${SPIN[0]} PANSA · ${label}\n${barText(0, false)}  ·  BERJALAN`);
+    const msg = await ctx.reply(`${SPIN[0]} PANSA · ${label}\n${barText(0, false)}  ·  IN PROGRESS`);
     let frame = 0,
       done = false,
       busy = false;
@@ -153,7 +156,7 @@ export async function startTelegram(d: Deps) {
       if (busy) return;
       busy = true;
       ctx.api
-        .editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[frame % SPIN.length]} PANSA · ${label}\n${barText(frame, false)}  ·  BERJALAN · ${clockFrom(startedAt)}`)
+        .editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[frame % SPIN.length]} PANSA · ${label}\n${barText(frame, false)}  ·  IN PROGRESS · ${clockFrom(startedAt)}`)
         .catch(() => {})
         .finally(() => (busy = false));
     }, 1000);
@@ -163,7 +166,7 @@ export async function startTelegram(d: Deps) {
       done = true;
       clearInterval(timer);
       while (busy) await sleep(30);
-      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[9]} PANSA · SELESAI\n${barText(0, true)} 100%  ·  ${clockFrom(startedAt)}`).catch(() => {});
+      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[9]} PANSA · DONE\n${barText(0, true)} 100%  ·  ${clockFrom(startedAt)}`).catch(() => {});
       await typeOut(ctx, msg, result);
       return result;
     } catch (e) {
@@ -171,7 +174,7 @@ export async function startTelegram(d: Deps) {
       clearInterval(timer);
       while (busy) await sleep(30);
       const err = e instanceof Error ? e.message : "error";
-      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `⚠️ PANSA · GAGAL\n${"━".repeat(18)}\n${err.slice(0, 3800)}`).catch(() => {});
+      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `⚠️ PANSA · FAILED\n${"━".repeat(18)}\n${err.slice(0, 3800)}`).catch(() => {});
       throw e;
     }
   };
@@ -185,7 +188,7 @@ export async function startTelegram(d: Deps) {
     const s = await session(ctx);
     const all = d.store.all("SELECT id FROM sessions ORDER BY rowid");
     const index = all.findIndex((x) => String(x.id) === String(s.id));
-    return { s, label: `Sesi #${index + 1}` };
+    return { s, label: `Session #${index + 1}` };
   };
   d.tools.send = async (text, file) => {
     for (const id of config.admins) {
@@ -226,8 +229,9 @@ export async function startTelegram(d: Deps) {
       const key = String(e.data.id);
       approvalMessages.set(key, []);
       const keyboard = new InlineKeyboard()
-        .text("✅ Setuju", `approve:${e.data.id}:yes`)
-        .text("❌ Tolak", `approve:${e.data.id}:no`);
+        .text("✅ Allow once", `approve:${e.data.id}:yes`);
+      if (e.data.allowSession) keyboard.text("🔓 Allow for session", `approve:${e.data.id}:session`).row();
+      keyboard.text("❌ Deny", `approve:${e.data.id}:no`);
       for (const id of config.admins)
         void bot.api
           .sendMessage(
@@ -256,10 +260,15 @@ export async function startTelegram(d: Deps) {
     );
   bot.command("start", (ctx) => ctx.reply(help));
   bot.command("help", async ctx => ctx.reply((await d.agent.commands.execute(String((await session(ctx)).id), "/help"))?.response ?? help));
-  for (const name of ["mode", "permissions", "plan", "clear", "compact", "init", "review", "model", "cost", "doctor"])
+  bot.command("permissions", async ctx => {
+    const s = await session(ctx);
+    const result = await d.agent.commands.execute(String(s.id), `/permissions ${ctx.match}`.trim());
+    await ctx.reply(result?.response ?? "Use /permissions or /permissions reset.");
+  });
+  for (const name of ["mode", "plan", "clear", "compact", "init", "review", "model", "cost", "doctor"])
     bot.command(name, async ctx => {
       const s = await session(ctx);
-      if (d.agent.running.has(String(s.id))) return ctx.reply("Task masih berjalan. Gunakan /stop terlebih dahulu.");
+      if (d.agent.running.has(String(s.id))) return ctx.reply("A task is still running. Use /stop first.");
       const rawPrompt = `/${name} ${ctx.match}`.trim();
       const prompt = ["mode", "permissions", "model", "clear", "compact", "cost", "doctor"].includes(name)
         ? rawPrompt
@@ -270,34 +279,34 @@ export async function startTelegram(d: Deps) {
     const [, id, index] = ctx.callbackQuery.data.split(":");
     const pending = d.tools.questions.get(id!);
     const option = pending?.options[Number(index)];
-    if (!pending || option === undefined) { await ctx.answerCallbackQuery("Pertanyaan sudah ditutup"); return; }
-    try { d.tools.answer(id!, option); await ctx.answerCallbackQuery(`Tersimpan: ${option}`.slice(0, 180)); }
-    catch { await ctx.answerCallbackQuery("Jawaban belum tersimpan. Silakan coba lagi."); }
+    if (!pending || option === undefined) { await ctx.answerCallbackQuery("This question is closed"); return; }
+    try { d.tools.answer(id!, option); await ctx.answerCallbackQuery(`Saved: ${option}`.slice(0, 180)); }
+    catch { await ctx.answerCallbackQuery("Your answer was not saved. Please try again."); }
   });
   bot.command("new", async (ctx) => {
     const old = await session(ctx);
     d.agent.stop(String(old.id));
     d.store.run("UPDATE sessions SET chat_id=NULL WHERE id=?", String(old.id));
     d.store.session("Telegram session", ctx.chat?.id ?? null);
-    await ctx.reply(`Sesi baru siap. Riwayat sebelumnya tetap tersimpan.`);
+    await ctx.reply(`Your new session is ready. Previous history is saved.`);
   });
   bot.command("continue", async (ctx) => {
     const requested = ctx.match.trim();
-    if (!/^[a-f0-9-]{36}$/.test(requested)) return ctx.reply("Gunakan /continue SESSION_ID dari daftar session dashboard atau CLI.");
+    if (!/^[a-f0-9-]{36}$/.test(requested)) return ctx.reply("Use /continue SESSION_ID from the dashboard or CLI session list.");
     const target = d.store.get("SELECT id FROM sessions WHERE id=?", requested);
-    if (!target) return ctx.reply("Session tidak ditemukan.");
+    if (!target) return ctx.reply("Session not found.");
     const current = await session(ctx);
     d.store.run("UPDATE sessions SET chat_id=NULL WHERE id=?", String(current.id));
     d.store.run("UPDATE sessions SET chat_id=? WHERE id=?", ctx.chat?.id ?? null, requested);
-    await ctx.reply(`Session ${requested} kini dipakai di Telegram; konteks percakapan dan memori sesi berlanjut.`);
+    await ctx.reply(`Session ${requested} is now connected to Telegram. Your conversation context and session memory will continue.`);
   });
   bot.command("stop", async (ctx) => {
     const s = await session(ctx);
     const result = d.agent.stopOrReap(String(s.id));
     await ctx.reply(
       result === "idle"
-        ? "Tidak ada task yang berjalan."
-        : "Task dihentikan.",
+        ? "No task is running."
+        : "Task stopped.",
     );
   });
   bot.command("status", async (ctx) => {
@@ -307,7 +316,7 @@ export async function startTelegram(d: Deps) {
       .filter((p) => p.enabled)
       .map((p) => p.name);
     await ctx.reply(
-      `${label}\nStatus: ${d.agent.running.has(String(s.id)) ? "bekerja" : "menganggur"}\nProvider aktif: ${active.join(", ") || "belum ada"}`,
+      `**${label}**\nStatus: ${d.agent.running.has(String(s.id)) ? "working" : "idle"}\nActive providers: ${active.join(", ") || "none"}`,
     );
   });
   const providerKeyboard = (pinned?: unknown) => {
@@ -322,7 +331,7 @@ export async function startTelegram(d: Deps) {
         )
         .row()
         .text("🧪 Tes", `provider:test:${p.id}`)
-        .text(p.enabled ? "⏸ Nonaktifkan" : "▶ Aktifkan", `provider:toggle:${p.id}`)
+        .text(p.enabled ? "⏸ Disable" : "▶ Enable", `provider:toggle:${p.id}`)
         .text("🗑", `provider:del:${p.id}`)
         .row();
     });
@@ -333,55 +342,54 @@ export async function startTelegram(d: Deps) {
     const list = d.providers.list();
     if (!list.length)
       return ctx.reply(
-        "Belum ada provider. Tambahkan dengan /addprovider atau wizard.",
+        "No providers yet. Use /addprovider or open the dashboard provider editor.",
       );
     const lines = list.map((p, i) => {
       const mark = String(p.id) === String(s.pinned) ? "✅" : "▫️";
-      return `${mark} ${i + 1}. ${p.name} · ${p.model} · ${p.enabled ? "aktif" : "off"} · ${p.api_key}`;
+      return `${mark} ${i + 1}. ${p.name} · ${p.model} · ${p.enabled ? "enabled" : "disabled"} · ${p.api_key}`;
     });
     return ctx.reply(
-      `Provider (ketuk untuk memilih):\n${lines.join("\n")}`,
+      `**AI providers**\nTap to select a connection:\n${lines.join("\n")}`,
       { reply_markup: providerKeyboard(s.pinned) },
     );
   };
   bot.command("providers", providerList);
   bot.command("addprovider", async (ctx) => {
     const parts = ctx.match.split("|");
-    if (parts.length !== 4) {
-      wizard.set(wizardUser(ctx), []);
-      return ctx.reply("Pilih preset atau kirim nama provider:", {
-        reply_markup: new InlineKeyboard()
-          .text("OpenAI", "preset:OpenAI")
-          .text("OpenRouter", "preset:OpenRouter")
-          .row()
-          .text("Groq", "preset:Groq")
-          .text("Gemini", "preset:Gemini")
-          .row()
-          .text("Ollama", "preset:Ollama")
-          .text("Custom", "preset:Custom"),
-      });
+    if (parts.length !== 4 && parts.length !== 5) {
+      const user = wizardUser(ctx);
+      wizard.set(user, []); wizardAdapters.delete(user); wizardModels.delete(user);
+      const keyboard = new InlineKeyboard();
+      providerPresets.forEach((preset, index) => { keyboard.text(preset.name, `preset:${preset.id}`); if (index % 2) keyboard.row(); });
+      return ctx.reply("**Connect an AI provider**\n\nChoose a preset or enter a connection name. At the model step, send ? to discover models. Use /cancel to exit. Advanced configuration is available in the dashboard.", { reply_markup: keyboard });
     }
     await ctx.deleteMessage().catch(() => {});
     try {
-      const id = d.providers.save({
+      const draft = {
         name: parts[0],
         base_url: parts[1],
         api_key: parts[2],
         model: parts[3],
         priority: 0,
-      });
-      await ctx.reply(`Provider ${parts[0]} tersimpan. Tes koneksi...`);
-      const test = await d.providers.test(id);
-      await ctx.reply(`Koneksi berhasil, latency ${test.latency}ms.`);
+        adapter: parts[4] ?? "openai",
+      };
+      const test = await d.providers.testDraft(draft);
+      d.providers.save(draft);
+      await ctx.reply(`**Provider connected**\n\n${parts[0]} · ${parts[3]}\nConnection verified · ${test.latency} ms\nCredentials saved encrypted.`);
     } catch (e) {
-      await ctx.reply(`Gagal: ${e instanceof Error ? e.message : "error"}`);
+      await ctx.reply(`Failed: ${e instanceof Error ? e.message : "error"}`);
     }
+  });
+  bot.command("cancel", async ctx => {
+    const user = wizardUser(ctx);
+    wizard.delete(user); wizardAdapters.delete(user); wizardModels.delete(user);
+    await ctx.reply("Provider setup cancelled.");
   });
   bot.command("model", async (ctx) => {
     const s = await session(ctx);
     const query = ctx.match.trim();
     if (!query) {
-      await ctx.reply("Pilih provider yang ingin dikunci:", {
+      await ctx.reply("Choose a provider to pin:", {
         reply_markup: providerKeyboard(s.pinned),
       });
       return;
@@ -390,17 +398,17 @@ export async function startTelegram(d: Deps) {
       .list()
       .find((x) => x.id === query || x.model === query);
     if (!p)
-      return ctx.reply("Provider/model tidak ditemukan. Gunakan /providers");
+      return ctx.reply("Provider or model not found. Use /providers.");
     d.store.run("UPDATE sessions SET pinned=? WHERE id=?", String(p.id), s.id);
     return ctx.reply(
-      `Model dikunci: ${p.name} · ${p.model}. Fallback tetap tersedia.`,
+      `Model pinned: ${p.name} · ${p.model}. Automatic failover remains available.`,
     );
   });
   bot.command("skills", async (ctx) =>
     ctx.reply(
       (await d.skills.list())
         .map((s) => `• ${s.name}: ${s.description}`)
-        .join("\n") || "Belum ada skill.",
+        .join("\n") || "No skills available yet.",
     ),
   );
   bot.command("memory", (ctx) =>
@@ -408,9 +416,9 @@ export async function startTelegram(d: Deps) {
   );
   bot.command("forget", async (ctx) => {
     const query = ctx.match.trim();
-    if (!query) return ctx.reply("Gunakan /forget kata atau fakta yang ingin dilupakan.");
+    if (!query) return ctx.reply("Use /forget followed by the fact you want forgotten.");
     const result = await d.tools.profile.forgetMemory(query, String((await session(ctx)).id));
-    await ctx.reply(result.verified ? `Memori dihapus: ${result.deleted}. Verifikasi indeks: berhasil.` : "Penghapusan belum terverifikasi; tidak ada klaim bahwa memori sudah hilang.");
+    await ctx.reply(result.verified ? `Deleted ${result.deleted} memories. Index removal verified.` : "Deletion could not be verified. The memory may still exist.");
   });
   bot.command("dashboard", (ctx) => {
     const token = randomBytes(32).toString("hex");
@@ -420,11 +428,11 @@ export async function startTelegram(d: Deps) {
       Date.now() + 300000,
     );
     return ctx.reply(
-      `Dashboard: ${config.PUBLIC_URL}/#login=${token}\nLink sekali pakai, berlaku 5 menit.`,
+      `Dashboard: ${config.PUBLIC_URL}/#login=${token}\nOne-time sign-in link. Expires in 5 minutes.`,
     );
   });
   bot.command("tasks", (ctx) =>
-    ctx.reply(`Task aktif: ${d.agent.running.size}`),
+    ctx.reply(`Active tasks: ${d.agent.running.size}`),
   );
   bot.command("autoapprove", async (ctx) => {
     const s = await session(ctx),
@@ -434,14 +442,14 @@ export async function startTelegram(d: Deps) {
       Number(on),
       s.id,
     );
-    await ctx.reply(`Auto-approve ${on ? "aktif" : "nonaktif"}.`);
+    await ctx.reply(`Auto-approve ${on ? "enabled" : "disabled"}. Protected actions still require approval.`);
   });
   for (const name of ["delprovider", "toggle", "prio", "test"] as const)
     bot.command(name, async (ctx) => {
       const [id, priority] = ctx.match.trim().split(/\s+/);
       if (!id)
         return ctx.reply(
-          `Gunakan /${name} ID${name === "prio" ? " PRIORITY" : ""}`,
+          `Use /${name} ID${name === "prio" ? " PRIORITY" : ""}`,
         );
       try {
         if (name === "test")
@@ -453,12 +461,12 @@ export async function startTelegram(d: Deps) {
           d.store.run("UPDATE providers SET enabled=1-enabled WHERE id=?", id);
         else {
           const n = Number(priority);
-          if (!Number.isInteger(n)) throw new Error("Priority harus integer");
+          if (!Number.isInteger(n)) throw new Error("Priority must be an integer");
           d.store.run("UPDATE providers SET priority=? WHERE id=?", n, id);
         }
-        return ctx.reply("Provider diperbarui");
+        return ctx.reply("Provider updated");
       } catch (e) {
-        return ctx.reply(e instanceof Error ? e.message : "Gagal");
+        return ctx.reply(e instanceof Error ? e.message : "Failed");
       }
     });
   bot.command("logs", (ctx) =>
@@ -476,7 +484,7 @@ export async function startTelegram(d: Deps) {
   bot.command("schedule", async (ctx) => {
     const [cron, ...rest] = ctx.match.split("|");
     if (!cron || !rest.length)
-      return ctx.reply("Format /schedule CRON|TASK (UTC)");
+      return ctx.reply("Usage: /schedule CRON|TASK (UTC)");
     const s = await session(ctx);
     try {
       const result = await d.tools.call(
@@ -490,38 +498,31 @@ export async function startTelegram(d: Deps) {
       );
       await ctx.reply(result);
     } catch (e) {
-      await ctx.reply(e instanceof Error ? e.message : "Gagal");
+      await ctx.reply(e instanceof Error ? e.message : "Failed");
     }
   });
   bot.callbackQuery(/^preset:/, async (ctx) => {
-    const preset = ctx.callbackQuery.data.slice(7);
-    const urls: Record<string, string> = {
-      OpenAI: "https://api.openai.com/v1",
-      OpenRouter: "https://openrouter.ai/api/v1",
-      Groq: "https://api.groq.com/openai/v1",
-      Gemini: "https://generativelanguage.googleapis.com/v1beta/openai",
-      Ollama: "http://ollama:11434/v1",
-    };
-    wizard.set(
-      ctx.from.id,
-      preset === "Custom" ? [] : [preset, urls[preset] ?? ""],
-    );
+    const name = ctx.callbackQuery.data.slice(7).toLowerCase();
+    const preset = providerPresets.find(item => item.id === name || item.name.toLowerCase() === name);
+    if (!preset) { await ctx.answerCallbackQuery("Preset not found"); return; }
+    wizard.set(ctx.from.id, preset.id === "custom" ? [] : [preset.name, preset.base_url]);
+    wizardAdapters.set(ctx.from.id, preset.adapter); wizardModels.set(ctx.from.id, preset.model);
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      preset === "Custom"
-        ? "Nama provider?"
-        : "API key? Kirim - jika tanpa key. Pesan ini akan dihapus setelah diterima.",
+      preset.id === "custom"
+        ? "Connection name?"
+        : "Enter your API key, or - if none is required. Your key message will be deleted after receipt.",
     );
   });
   bot.callbackQuery(/^approve:/, async (ctx) => {
     const [, id, decision] = ctx.callbackQuery.data.split(":");
     try {
-      d.tools.decide(id!, decision === "yes");
+      d.tools.decide(id!, decision === "yes" || decision === "session", decision === "session" ? "session" : "once");
       await ctx.answerCallbackQuery(
-        decision === "yes" ? "Disetujui" : "Ditolak",
+        decision === "session" ? "Allowed for this session" : decision === "yes" ? "Allowed once" : "Denied",
       );
     } catch {
-      await ctx.answerCallbackQuery("Approval kedaluwarsa");
+      await ctx.answerCallbackQuery("Approval expired");
     }
   });
   bot.on(
@@ -537,7 +538,7 @@ export async function startTelegram(d: Deps) {
       const root = await d.tools.sandbox.root(String(s.id));
       const file = await bot.api.getFile(fileId);
       if (Number(file.file_size) > 20e6)
-        return ctx.reply("File terlalu besar (maks 20MB)");
+        return ctx.reply("File is too large (maximum 20 MB)");
       const name = path.basename(
         doc?.file_name ??
           `upload-${Date.now()}${ctx.message.voice ? ".ogg" : ".jpg"}`,
@@ -547,19 +548,19 @@ export async function startTelegram(d: Deps) {
         `https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file.file_path}`,
         { signal: AbortSignal.timeout(30000) },
       );
-      if (!response.ok) return ctx.reply("Unduhan Telegram gagal");
+      if (!response.ok) return ctx.reply("Telegram download failed");
       await fs.writeFile(dest, Buffer.from(await response.arrayBuffer()));
       if (name.endsWith(".md")) {
         try {
           const raw = await fs.readFile(dest, "utf8");
           const meta = await d.skills.save(raw);
-          return ctx.reply(`Skill ${meta.name} diinstal.`);
+          return ctx.reply(`Skill ${meta.name} installed.`);
         } catch {}
       }
       const caption = telegramPrompt(ctx.message as TelegramPromptMessage).trim();
-      await ctx.reply(`File diterima: ${name}. Saya akan menganalisis isinya.`);
-      if (!d.agent.running.has(String(s.id))) void animatedReply(ctx, () => d.agent.run(String(s.id), `${caption ? `Instruksi pengguna: ${caption}\n` : ""}Analisis lampiran @${name} dan berikan ringkasan, fakta penting, serta keterbatasan. ${ctx.message.voice ? "Jika tidak tersedia alat transkripsi audio, jelaskan keterbatasannya tanpa mengarang transkrip." : ""}`), "MENGANALISIS FILE").catch(() => {});
-      else await ctx.reply("Ada tugas yang masih berjalan; file tersimpan dan belum dianalisis.");
+      await ctx.reply(`File received: ${name}. I'll analyze its contents.`);
+      if (!d.agent.running.has(String(s.id))) void animatedReply(ctx, () => d.agent.run(String(s.id), `${caption ? `User instructions: ${caption}\n` : ""}Analyze attachment @${name} and provide a summary, key facts, and limitations. ${ctx.message.voice ? "If no audio transcription tool is available, explain the limitation without inventing a transcript." : ""}`), "ANALYZING FILE").catch(() => {});
+      else await ctx.reply("A task is running. Your file was saved and has not been analyzed yet.");
     },
   );
   bot.on("message:text", async (ctx) => {
@@ -567,30 +568,43 @@ export async function startTelegram(d: Deps) {
     if (fields) {
       const value = ctx.message.text.trim();
       if (fields.length === 2) await ctx.deleteMessage().catch(() => {});
-      fields.push(value === "-" ? "" : value);
+      if (fields.length === 3 && value === "?") {
+        try {
+          const result = await d.providers.models({ name: fields[0], base_url: fields[1], api_key: fields[2], adapter: wizardAdapters.get(ctx.from.id) ?? "openai", model: "discovery" });
+          const names = result.models.slice(0, 15).map(model => `• \`${model.id.replace(/`/g, "")}\``).join("\n");
+          await ctx.reply(`**Available models**\n\n${names || "No models returned. Enter a model ID manually."}\n\nSend the exact model ID to continue.${result.models.length > 15 ? " More models are available in the dashboard." : ""}`);
+        } catch (error) { await ctx.reply(error instanceof Error ? error.message : "Model discovery failed. Enter a model ID manually."); }
+        return;
+      }
+      fields.push(value === "-" ? (fields.length === 3 ? wizardModels.get(ctx.from.id) ?? "" : "") : value);
       if (fields.length < 4)
         return ctx.reply(
           [
-            "Nama provider?",
+            "Connection name?",
             "Base URL?",
-            "API key? Pesan key akan dihapus.",
-            "Model?",
+            "API key? Your key message will be deleted.",
+            `Model ID? Send ? to discover models${wizardModels.get(ctx.from.id) ? ` or - to use ${wizardModels.get(ctx.from.id)}` : ""}.`,
           ][fields.length] ?? "Model?",
         );
       wizard.delete(ctx.from.id);
+      const adapter = wizardAdapters.get(ctx.from.id) ?? "openai";
+      wizardAdapters.delete(ctx.from.id); wizardModels.delete(ctx.from.id);
       try {
-        const id = d.providers.save({
+        const draft = {
           name: fields[0],
           base_url: fields[1],
           api_key: fields[2],
           model: fields[3],
-        });
+          adapter,
+        };
+        const test = await d.providers.testDraft(draft);
+        d.providers.save(draft);
         await ctx.reply(
-          `Provider tersimpan. ${JSON.stringify(await d.providers.test(id))}`,
+          `**Provider connected**\n\n${fields[0]} · ${fields[3]}\nConnection verified · ${test.latency} ms\nCredentials saved encrypted.`,
         );
       } catch {
         await ctx.reply(
-          "Provider gagal disimpan atau tes koneksi gagal. Cek /providers.",
+          "Saving or testing the provider failed. Check /providers.",
         );
       }
       return;
@@ -599,22 +613,22 @@ export async function startTelegram(d: Deps) {
     if (/\b(sk-|gsk_|AIza)[\w-]{12,}/.test(prompt)) {
       await ctx.deleteMessage().catch(() => {});
       return ctx.reply(
-        "Key tidak diproses sebagai task. Gunakan /addprovider agar tersimpan terenkripsi.",
+        "API keys are not processed as tasks. Use /addprovider to store your key encrypted.",
       );
     }
     const s = await session(ctx);
     const pendingQuestion = [...d.tools.questions].find(([, q]) => q.session === String(s.id));
     if (pendingQuestion) {
       try { d.tools.answer(pendingQuestion[0], ctx.message.text); void ctx.react("👍").catch(() => {}); }
-      catch (error) { await ctx.reply(`**PANSA · JAWABAN BELUM DITERIMA**\n\n${error instanceof Error ? error.message : "Pilih opsi pada pertanyaan yang masih terbuka."}`); }
+      catch (error) { await ctx.reply(`**PANSA · ANSWER NOT ACCEPTED**\n\n${error instanceof Error ? error.message : "Choose an option on the open question."}`); }
       return;
     }
     if (d.agent.running.has(String(s.id)))
-      return ctx.reply("Task masih berjalan. Gunakan /stop atau /new.");
+      return ctx.reply("A task is still running. Use /stop or /new.");
     const stop = () =>
       new InlineKeyboard().text("⛔ Stop", `stop:${s.id}`);
     const startedAt = Date.now();
-    const wait = await ctx.reply(`${SPIN[0]} PANSA · MENYIAPKAN\n${barText(0, false)}  ·  ${d.tools.state.mode(String(s.id)).toUpperCase()}\n\nMembangunkan asisten…`, {
+    const wait = await ctx.reply(`${SPIN[0]} PANSA · PREPARING\n${barText(0, false)}  ·  ${d.tools.state.mode(String(s.id)).toUpperCase()}\n\nGetting your assistant ready…`, {
       reply_markup: stop(),
     });
     void ctx.react("👀").catch(() => {});
@@ -625,7 +639,7 @@ export async function startTelegram(d: Deps) {
     let text = "",
       thought = "",
       last = 0,
-      current = "Menyiapkan konteks pribadi",
+      current = "Preparing your personal context",
       frame = 0,
       busy = false,
       dirty = true,
@@ -639,27 +653,27 @@ export async function startTelegram(d: Deps) {
       const u = d.agent.sessionUsage(String(s.id));
       const secs = Math.max(0, (Date.now() - startedAt) / 1000);
       const phase = finished
-        ? finishedStatus === "done" ? "SELESAI" : "GAGAL"
+        ? finishedStatus === "done" ? "DONE" : "FAILED"
         : waitingFor
-          ? "MENUNGGU ANDA"
+          ? "WAITING FOR YOU"
         : text.length > 0
-          ? "MENULIS JAWABAN"
+          ? "WRITING A RESPONSE"
           : steps.length
-            ? "MENGOLAH HASIL"
+            ? "PROCESSING RESULTS"
             : secs > 2
-              ? "BERPIKIR"
-              : "MENYIAPKAN";
+              ? "THINKING"
+              : "PREPARING";
       const spinner = finished
         ? finishedStatus === "done" ? "🎉" : "⚠️"
         : SPIN[frame % SPIN.length];
       const dots = ["", "·", "••", "•••"][frame % 4];
       const title = `${spinner} PANSA · ${phase} ${dots}`;
       const bar = barText(frame, finished);
-      const pct = finished ? " 100%" : " BERJALAN";
-      const meta = `${d.tools.state.mode(String(s.id)).toUpperCase()}  ·  ${u.provider ?? "provider?"}/${u.model ?? "—"}  ·  ${clockFrom(startedAt)}  ·  ${steps.length} langkah`;
+      const pct = finished ? " 100%" : " IN PROGRESS";
+      const meta = `${d.tools.state.mode(String(s.id)).toUpperCase()}  ·  ${u.provider ?? "provider?"}/${u.model ?? "—"}  ·  ${clockFrom(startedAt)}  ·  ${steps.length} steps`;
       const activity = finished
         ? finishedStatus === "done"
-          ? "\n✅ Semua langkah selesai"
+          ? "\n✅ All steps complete"
           : `\n❌ ${current}`
         : current
           ? `\n${current}`
@@ -689,20 +703,20 @@ export async function startTelegram(d: Deps) {
     };
     const listener = (e: LiveEvent) => {
       if (e.type === "audit" && (e.data.action === "approval" || e.data.action === "approval_closed") && waitingFor?.id === e.data.id) {
-        waitingFor = null; current = "Melanjutkan pekerjaan"; dirty = true; return;
+        waitingFor = null; current = "Continuing your task"; dirty = true; return;
       }
       if (e.session_id !== s.id) return;
       if (e.type === "approval") {
         waitingFor = { kind: "approval", id: String(e.data.id) };
-        current = "Tinjau tindakan pada kartu persetujuan di bawah";
+        current = "Review the action on the approval card below";
       } else if (e.type === "progress" && e.data.kind === "question") {
         waitingFor = { kind: "question", id: String(e.data.id) };
-        current = "Pilih opsi pada kartu pertanyaan untuk melanjutkan";
+        current = "Choose an answer on the question card to continue";
       } else if (e.type === "progress" && e.data.kind === "question_resolved") {
-        waitingFor = null; current = "Melanjutkan berdasarkan pilihan Anda";
+        waitingFor = null; current = "Continuing with your choice";
       } else if (e.type === "token") {
         text += String(e.data.text ?? "");
-        current = "✍️ Menyusun jawaban";
+        current = "✍️ Composing your response";
       }
       else if (e.type === "tool") {
         if (text.trim()) thought = text.trim();
@@ -710,7 +724,7 @@ export async function startTelegram(d: Deps) {
         const name = String(e.data.name ?? e.data.tool ?? "alat");
         const command = e.data.command ? ` · ${String(e.data.command).slice(0, 100)}` : "";
         const cmd = `${name}${command}`;
-        if (e.data.status === "running") current = `⚙️ Menjalankan ${cmd}`;
+        if (e.data.status === "running") current = `⚙️ Running ${cmd}`;
         else {
           const secs = Number(e.data.durationMs ?? 0);
           const exit = e.data.exitCode;
@@ -718,18 +732,18 @@ export async function startTelegram(d: Deps) {
             [
               e.data.status === "done" ? "✅" : "❌",
               name,
-              secs >= 1000 ? `${Math.round(secs / 1000)} dtk` : "",
+              secs >= 1000 ? `${Math.round(secs / 1000)} sec` : "",
               exit === undefined || exit === null ? "" : `exit ${String(exit)}`,
             ]
               .filter(Boolean)
               .join(" "),
           );
-          current = e.data.status === "done" ? "🔎 Memeriksa hasil tool" : "🧭 Menyesuaikan langkah berikutnya";
+          current = e.data.status === "done" ? "🔎 Reviewing tool results" : "🧭 Adjusting the next step";
         }
       } else if (e.type === "progress" && e.data.kind !== "context") {
-        current = `${e.data.kind === "todo" ? "📍" : e.data.kind === "subagent" ? "🧩" : "💡"} ${String(e.data.text ?? "Sedang memproses").slice(0, 240)}`;
+        current = `${e.data.kind === "todo" ? "📍" : e.data.kind === "subagent" ? "🧩" : "💡"} ${String(e.data.text ?? "Working").slice(0, 240)}`;
       } else if (e.type === "progress" && e.data.kind === "context" && Number(e.data.percent) >= 70) {
-        current = `🧠 Menata konteks percakapan · ~${e.data.percent}%`;
+        current = `🧠 Managing conversation context · ~${e.data.percent}%`;
       } else return;
       dirty = true;
     };
@@ -759,7 +773,7 @@ export async function startTelegram(d: Deps) {
       .catch(async (e) => {
         finished = true;
         finishedStatus = "error";
-        current = e instanceof Error ? e.message : "Task gagal";
+        current = e instanceof Error ? e.message : "Task failed";
         text = "";
         void ctx.react("😢").catch(() => {});
         await settle();
@@ -775,7 +789,7 @@ export async function startTelegram(d: Deps) {
     const [, action, id] = ctx.callbackQuery.data.split(":");
     if (action === "noop") return ctx.answerCallbackQuery();
     const provider = d.providers.list().find((p) => String(p.id) === id);
-    if (!provider) return ctx.answerCallbackQuery("Provider tidak ditemukan");
+    if (!provider) return ctx.answerCallbackQuery("Provider not found");
     const name = String(provider.name);
     if (action === "pin") {
       const s = await session(ctx);
@@ -790,15 +804,15 @@ export async function startTelegram(d: Deps) {
       });
     }
     if (action === "test") {
-      await ctx.answerCallbackQuery(`Menguji ${name}…`);
+      await ctx.answerCallbackQuery(`Testing ${name}…`);
       try {
         const r = await d.providers.test(String(provider.id));
         return ctx.reply(
-          r.ok ? `✅ ${name} responsif (${r.latency} ms)` : `⚠️ ${name} gagal`,
+          r.ok ? `✅ ${name} connected (${r.latency} ms)` : `⚠️ ${name} failed`,
         );
       } catch (e) {
         return ctx.reply(
-          `❌ ${name} gagal: ${e instanceof Error ? e.message : "error"}`,
+          `❌ ${name} failed: ${e instanceof Error ? e.message : "error"}`,
         );
       }
     }
@@ -811,7 +825,7 @@ export async function startTelegram(d: Deps) {
         .list()
         .find((p) => String(p.id) === id);
       await ctx.answerCallbackQuery(
-        now?.enabled ? `${name} diaktifkan` : `${name} dinonaktifkan`,
+        now?.enabled ? `${name} enabled` : `${name} disabled`,
       );
       return ctx.editMessageReplyMarkup({
         reply_markup: providerKeyboard(
@@ -823,20 +837,20 @@ export async function startTelegram(d: Deps) {
       await ctx.answerCallbackQuery();
       return ctx.editMessageReplyMarkup({
         reply_markup: new InlineKeyboard()
-          .text(`🗑 Hapus ${name}?`, "provider:noop")
+          .text(`🗑 Delete ${name}?`, "provider:noop")
           .row()
-          .text("Ya, hapus", `provider:delyes:${provider.id}`)
-          .text("Batal", `provider:delno:${provider.id}`),
+          .text("Yes, delete", `provider:delyes:${provider.id}`)
+          .text("Cancel", `provider:delno:${provider.id}`),
       });
     }
     if (action === "delyes") {
       d.store.run("DELETE FROM providers WHERE id=?", String(provider.id));
       d.providers.refreshSecrets();
-      await ctx.answerCallbackQuery(`${name} dihapus`);
-      return ctx.editMessageText(`🗑 Provider ${name} dihapus.`);
+      await ctx.answerCallbackQuery(`${name} deleted`);
+      return ctx.editMessageText(`🗑 Provider ${name} deleted.`);
     }
     if (action === "delno") {
-      await ctx.answerCallbackQuery("Dibatalkan");
+      await ctx.answerCallbackQuery("Cancelled");
       return ctx.editMessageReplyMarkup({
         reply_markup: providerKeyboard((await session(ctx)).pinned),
       });
@@ -846,7 +860,7 @@ export async function startTelegram(d: Deps) {
   bot.callbackQuery(/^stop:/, async (ctx) => {
     const result = d.agent.stopOrReap(ctx.callbackQuery.data.slice(5));
     await ctx.answerCallbackQuery(
-      result === "idle" ? "Tidak ada task berjalan" : "Task dihentikan",
+      result === "idle" ? "No task running" : "Task stopped",
     );
   });
   bot.catch((err) =>
@@ -889,7 +903,7 @@ export async function startTelegram(d: Deps) {
     ?.catch((error) =>
       d.store.event("error", null, {
         error:
-          error instanceof Error ? error.message : "Telegram polling gagal",
+          error instanceof Error ? error.message : "Telegram polling failed",
       }),
     );
 }

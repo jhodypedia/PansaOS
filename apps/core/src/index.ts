@@ -9,6 +9,7 @@ import path from "node:path";
 import { config } from "./config.js";
 import { Store } from "./store.js";
 import { Providers } from "./providers.js";
+import { providerPresets } from "./provider-presets.js";
 import { Sandbox } from "./sandbox.js";
 import { Skills } from "./skills.js";
 import { Tools } from "./tools.js";
@@ -88,7 +89,7 @@ app.get("/health", async () => ({
 }));
 app.addHook("onRequest", async (req, reply) => {
   if (req.headers.origin && req.headers.origin !== config.PUBLIC_URL)
-    return reply.code(403).send({ error: "Origin ditolak" });
+    return reply.code(403).send({ error: "Origin rejected" });
   if (
     req.url.startsWith("/api") &&
     req.url.split("?")[0] !== "/api/auth" &&
@@ -110,7 +111,7 @@ app.post(
       Date.now(),
     );
     if (!once && !(await bcrypt.compare(input, store.setting("admin_hash"))))
-      return reply.code(401).send({ error: "Token salah" });
+      return reply.code(401).send({ error: "Invalid token" });
     if (once) store.run("DELETE FROM auth WHERE token=?", hash(input));
     const sessionToken = randomBytes(32).toString("hex");
     store.run(
@@ -141,7 +142,7 @@ await routes(app, store, tools, providers, agent);
 app.setErrorHandler((error: unknown, req, reply) => {
   if (error instanceof z.ZodError)
     return reply.code(400).send({
-      error: "Input tidak valid",
+      error: "Invalid input",
       fields: error.issues.map((i) => ({
         path: i.path.join("."),
         message: i.message,
@@ -154,7 +155,7 @@ app.setErrorHandler((error: unknown, req, reply) => {
     error:
       status < 500 && e.message
         ? e.message
-        : "Permintaan gagal. Periksa log admin.",
+        : "Request failed. Check the server logs.",
   });
 });
 app.get("/api/auth/session", async () => ({ ok: true }));
@@ -246,6 +247,7 @@ app.get("/api/stats", async () => ({
   running: agent.running.size,
 }));
 app.get("/api/providers", async () => providers.list());
+app.get("/api/providers/presets", async () => providerPresets);
 app.get("/api/doctor", async (req) => {
   const session = String((req.query as { session?: string }).session ?? "");
   const activeDirectory = session ? await sandbox.root(session) : config.workspace;
@@ -256,6 +258,10 @@ app.get("/api/doctor", async (req) => {
   return { exec_mode: config.EXEC_MODE, workspace_dir: activeDirectory, providers: health };
 });
 app.post("/api/providers", async (req) => providers.save(req.body));
+app.post("/api/providers/validate", async req => providers.testDraft(req.body));
+app.post("/api/providers/models", async req => providers.models(req.body));
+app.post("/api/providers/:id/validate", async req => providers.testDraft(req.body, (req.params as { id: string }).id));
+app.post("/api/providers/:id/models", async req => providers.models(req.body, (req.params as { id: string }).id));
 app.delete("/api/providers/:id", async (req) => {
   const id = (req.params as { id: string }).id;
   store.run("DELETE FROM providers WHERE id=?", id);
@@ -295,7 +301,7 @@ app.delete("/api/mcp/:name", async req => { await mcp.remove((req.params as { na
 for (const server of mcp.configs()) void mcp.connect(server);
 app.get("/api/sessions/:id/state", async req => {
   const id = (req.params as { id: string }).id;
-  if (!store.get("SELECT id FROM sessions WHERE id=?", id)) throw Object.assign(new Error("Session tidak ditemukan"), { statusCode: 404 });
+  if (!store.get("SELECT id FROM sessions WHERE id=?", id)) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
   return { mode: tools.state.mode(id), todos: tools.state.todos(id), usage: agent.sessionUsage(id), checkpoints: await tools.checkpoints.list(id), visible_after: tools.state.get(id, "visible_after", 0), subagents: [...tools.backgroundTasks.values()].filter(t => t.session === id), questions: [...tools.questions].filter(([, q]) => q.session === id).map(([key, q]) => ({ id: key, question: q.question, options: q.options, details: q.details, allow_free: q.allowFree, expires_at: q.expiresAt, default: q.default })) };
 });
 app.post("/api/sessions/:id/mode", async req => {
@@ -314,17 +320,17 @@ app.post("/api/sessions/:id/message", async (req, reply) => {
     .object({ prompt: z.string().trim().min(1).max(100000) })
     .parse(req.body);
   if (!store.get("SELECT id FROM sessions WHERE id=?", id))
-    return reply.code(404).send({ error: "Session tidak ditemukan" });
+    return reply.code(404).send({ error: "Session not found" });
   if (agent.running.has(id))
-    return reply.code(409).send({ error: "Task masih berjalan" });
-  if (!body?.prompt) return reply.code(400).send({ error: "Prompt wajib" });
+    return reply.code(409).send({ error: "A task is still running" });
+  if (!body?.prompt) return reply.code(400).send({ error: "A prompt is required" });
   void agent.run(id, body.prompt).catch((e) => agent.fail(id, e));
   return { accepted: true };
 });
 app.delete("/api/sessions/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   if (!store.get("SELECT id FROM sessions WHERE id=?", id))
-    return reply.code(404).send({ error: "Session tidak ditemukan" });
+    return reply.code(404).send({ error: "Session not found" });
   await mcp.removeSession(id);
   const removed = await agent.purge(id);
   return { ok: true, removed };
@@ -332,21 +338,25 @@ app.delete("/api/sessions/:id", async (req, reply) => {
 app.post("/api/sessions/:id/stop", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   if (!store.get("SELECT id FROM sessions WHERE id=?", id))
-    return reply.code(404).send({ error: "Session tidak ditemukan" });
+    return reply.code(404).send({ error: "Session not found" });
   return { ok: true, status: agent.stopOrReap(id) };
 });
 app.get("/api/approvals", async () =>
   store.all(
     "SELECT * FROM approvals WHERE status='pending' ORDER BY created_at",
-  ),
+  ).map(row => ({ ...row, ...tools.approvalInfo(String(row.id)) })),
 );
 app.post("/api/approvals/:id", async (req) => {
+  const decision = z.object({ approved: z.boolean(), duration: z.enum(["once", "session"]).default("once") }).parse(req.body);
   tools.decide(
     (req.params as { id: string }).id,
-    Boolean((req.body as { approved?: boolean }).approved),
+    decision.approved,
+    decision.duration,
   );
   return { ok: true };
 });
+app.get("/api/sessions/:id/permissions", async req => ({ grants: tools.permissions((req.params as { id: string }).id) }));
+app.delete("/api/sessions/:id/permissions", async req => { tools.revokePermissions((req.params as { id: string }).id); return { ok: true }; });
 app.get("/api/skills", async () => skills.list());
 app.post("/api/skills", async (req) =>
   skills.save(String((req.body as { markdown: string }).markdown)),
@@ -368,7 +378,7 @@ app.get("/api/config", async () => ({
   telegram: Boolean(config.BOT_TOKEN),
 }));
 tools.send = async () => {
-  throw new Error("Telegram belum dikonfigurasi");
+  throw new Error("Telegram is not configured");
 };
 const stale = store.all(
   `SELECT e.session_id, e.data FROM events e
@@ -381,7 +391,7 @@ for (const row of stale) {
   if (!id || agent.running.has(id)) continue;
   store.event("task", id, {
     status: "error",
-    error: "Terputus karena core restart. Kirim pesan untuk melanjutkan.",
+    error: "Interrupted by a core restart. Send a message to continue.",
   });
 }
 store.run(
@@ -391,7 +401,7 @@ if (config.BOT_TOKEN)
   await startTelegram({ store, providers, skills, tools, agent, app }).catch(
     (e) =>
       app.log.error(
-        { message: e instanceof Error ? e.message : "Telegram gagal" },
+        { message: e instanceof Error ? e.message : "Telegram failed" },
         "telegram initialization failed",
       ),
   );

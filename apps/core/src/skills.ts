@@ -71,7 +71,7 @@ export class Skills {
     return relevant
       .map(
         (s) =>
-          `Skill ${s.name}: ${s.description}. Gunakan read_skill untuk instruksi lengkap.`,
+          `Skill ${s.name}: ${s.description}. Use read_skill for the full instructions.`,
       )
       .join("\n");
   }

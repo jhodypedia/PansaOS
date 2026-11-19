@@ -1,6 +1,6 @@
 ---
 name: notes-knowledge
-description: Kelola catatan dan basis pengetahuan, temukan informasi, serta rawat memori pengguna.
+description: Organize notes and knowledge, retrieve information, and maintain user memory.
 triggers: [catatan, notes, pengetahuan, knowledge base, ingat, memory, lupakan, forget]
 tools: [memory_save, memory_forget, memory_explain, recall, read_file, write_file, edit_file]
 ---

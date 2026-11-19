@@ -1,0 +1,15 @@
+export const providerPresets = [
+  { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", adapter: "openai", model: "gpt-4.1", key_required: true, hint: "OpenAI Chat Completions API" },
+  { id: "openai-responses", name: "OpenAI Responses", base_url: "https://api.openai.com/v1", adapter: "responses", model: "", key_required: true, hint: "Native Responses API with streaming, reasoning continuity, and function calling" },
+  { id: "anthropic", name: "Anthropic", base_url: "https://api.anthropic.com/v1", adapter: "anthropic", model: "claude-sonnet-4-5", key_required: true, hint: "Native Anthropic Messages API" },
+  { id: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", adapter: "openai", model: "", key_required: true, hint: "Discover available models or enter a provider/model ID" },
+  { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com/v1", adapter: "openai", model: "deepseek-chat", key_required: true, hint: "OpenAI-compatible DeepSeek endpoint" },
+  { id: "gemini", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", adapter: "openai", model: "gemini-2.5-flash", key_required: true, hint: "Gemini through its OpenAI-compatible endpoint" },
+  { id: "groq", name: "Groq", base_url: "https://api.groq.com/openai/v1", adapter: "openai", model: "", key_required: true, hint: "Discover your available Groq models" },
+  { id: "mistral", name: "Mistral", base_url: "https://api.mistral.ai/v1", adapter: "openai", model: "mistral-small-latest", key_required: true, hint: "Mistral Chat Completions API" },
+  { id: "together", name: "Together AI", base_url: "https://api.together.xyz/v1", adapter: "openai", model: "", key_required: true, hint: "Discover a model enabled for your account" },
+  { id: "ollama", name: "Ollama", base_url: "http://127.0.0.1:11434/v1", adapter: "openai", model: "", key_required: false, hint: "Local endpoint on the machine running PansaOS. Use an installed model with tool support." },
+  { id: "lmstudio", name: "LM Studio", base_url: "http://127.0.0.1:1234/v1", adapter: "openai", model: "", key_required: false, hint: "Enable the local server and load a model with tool support" },
+  { id: "xingchi", name: "Xingchi API", base_url: "https://api.xingchiapi.com/v1", adapter: "responses", model: "", key_required: true, hint: "Responses endpoint. Enter an account-enabled model and any custom headers required by your provider's documentation. Header requirements have not been independently verified." },
+  { id: "custom", name: "Custom endpoint", base_url: "", adapter: "openai", model: "", key_required: false, hint: "Chat Completions, Responses, or Anthropic Messages endpoint" },
+] as const;

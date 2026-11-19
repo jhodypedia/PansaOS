@@ -5,9 +5,9 @@ import type { Store } from "./store.js";
 import { config } from "./config.js";
 import { redact } from "./security.js";
 
-const defaultSoul = `# SOUL.md\n\nNama: Pansa\n\nKamu adalah asisten pribadi yang hangat, jujur, teliti, dan proaktif secukupnya. Gunakan Bahasa Indonesia sebagai bahasa default. Kenali konteks pengguna dan bantu percakapan, pertanyaan, riset, tulisan, catatan, jadwal, otomasi, serta pekerjaan teknis. Bedakan fakta terverifikasi dan dugaan; jangan mengarang hasil. Jaga privasi dan minta persetujuan eksplisit sebelum mengirim pesan atas nama pengguna, memposting, membeli, atau melakukan tindakan berdampak. Jangan meminta password atau API key dalam chat biasa.\n`;
-const defaultUser = `# Profil Pengguna\n\n- Nama: (belum diketahui)\n- Panggilan: (belum diketahui)\n- Zona waktu: Asia/Jakarta\n- Bahasa: Bahasa Indonesia\n\n## Preferensi\n\n## Orang penting\n\n## Proyek dan tujuan berjalan\n`;
-const defaultMemory = `# Memori Jangka Panjang\n\nFakta, preferensi, keputusan, komitmen, hubungan, dan hasil penting yang dipilih pengguna untuk diingat.\n`;
+const defaultSoul = `# SOUL.md\n\nName: Pansa\n\nYou are a warm, honest, thoughtful personal assistant. Use English by default and follow the user's requested or saved language preference. Help with conversations, questions, research, writing, notes, schedules, automation, and technical work. Distinguish verified facts from assumptions; never invent results. Respect privacy and request explicit authorization before sending messages, publishing, purchasing, or making material external changes. Never ask for passwords or API keys in ordinary chat.\n`;
+const defaultUser = `# User Profile\n\n- Name: (not yet known)\n- Preferred name: (not yet known)\n- Time zone: UTC\n- Language: English\n\n## Preferences\n\n## Important people\n\n## Current projects and goals\n`;
+const defaultMemory = `# Long-term Memory\n\nFacts, preferences, decisions, commitments, relationships, and important outcomes the user chooses to remember.\n`;
 
 export class Profile {
   constructor(private store: Store) {}
@@ -29,7 +29,7 @@ export class Profile {
   }
 
   async write(which: "soul" | "user" | "memory", content: string) {
-    if (content.length > 200_000) throw new Error("Dokumen terlalu besar");
+    if (content.length > 200_000) throw new Error("Document is too large");
     const file = which === "soul" ? config.soul : which === "user" ? config.user : config.memory;
     await fs.mkdir(path.dirname(file), { recursive: true });
     await this.secureWrite(file, content);
@@ -66,7 +66,7 @@ export class Profile {
       if (match) add(`${match[1]}-user`, match[2]!, match[3]!, match[5]!.trim(), match[4]);
       else {
         const plain = section.trim();
-        if (plain && !plain.startsWith("#")) add(randomUUID(), "fakta", "Profil pengguna", plain);
+        if (plain && !plain.startsWith("#")) add(randomUUID(), "fakta", "User profile", plain);
       }
     }
   }
@@ -74,7 +74,7 @@ export class Profile {
   async relevant(query: string) {
     const terms = new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? []);
     const output: string[] = [];
-    for (const [label, file] of [["Profil pengguna", config.user], ["Memori terkurasi", config.memory]] as const) {
+    for (const [label, file] of [["User profile", config.user], ["Curated memory", config.memory]] as const) {
       const content = await fs.readFile(file, "utf8").catch(() => "");
       const chunks = file === config.memory
         ? content.split(/(?=^## \[)/m).filter((section) => section.startsWith("## [")).map((text) => text.trim())
@@ -122,7 +122,7 @@ export class Profile {
     if (row.source_type === "profile" && String(row.profile_doc) === "USER.md" && !id.endsWith("-user")) {
       const user = await fs.readFile(config.user, "utf8");
       const target = String(row.content).trim();
-      if (!target || !user.includes(target)) throw new Error("Memori profil tidak ditemukan di USER.md");
+      if (!target || !user.includes(target)) throw new Error("Profile memory was not found in USER.md");
       await this.secureWrite(config.user, user.replace(target, "").replace(/\n{3,}/g, "\n\n"));
       await this.index(config.user);
       return { deleted: true, verified: !this.store.all("SELECT id FROM memory WHERE profile_doc='USER.md'").some((item) => item.id === id) };
@@ -146,11 +146,11 @@ export class Profile {
 
   async updateMemory(id: string, key: string, content: string) {
     const row = this.store.get("SELECT * FROM memory WHERE id=?", id);
-    if (!row) throw new Error("Memori tidak ditemukan");
+    if (!row) throw new Error("Memory not found");
     if (row.source_type === "profile" && row.profile_doc === "USER.md" && !id.endsWith("-user")) {
       const user = await fs.readFile(config.user, "utf8");
       const target = String(row.content).trim();
-      if (!target || !user.includes(target)) throw new Error("Memori profil tidak ditemukan di USER.md");
+      if (!target || !user.includes(target)) throw new Error("Profile memory was not found in USER.md");
       await this.secureWrite(config.user, user.replace(target, redact(content, this.store.secrets)));
       await this.index(config.user);
       return { ok: true };

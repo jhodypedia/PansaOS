@@ -1,4 +1,4 @@
 ---
-description: Bersihkan tampilan, simpan arsip
+description: Clear the active view and preserve the archive
 ---
 Bersihkan tampilan aktif.

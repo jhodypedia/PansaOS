@@ -12,7 +12,7 @@ export function tolerantJsonBody(app: FastifyInstance) {
         done(null, JSON.parse(text));
       } catch {
         done(
-          Object.assign(new Error("Body JSON tidak valid"), { statusCode: 400 }),
+          Object.assign(new Error("Invalid JSON body"), { statusCode: 400 }),
           undefined,
         );
       }

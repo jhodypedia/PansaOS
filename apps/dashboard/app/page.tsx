@@ -3,6 +3,8 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "rea
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import ProviderForm from "./provider-form";
+import ProviderCard from "./provider-card";
 import {
   motion,
   AnimatePresence,
@@ -88,6 +90,19 @@ const tabs = [
   ["schedules", Clock],
   ["settings", Settings],
 ] as const;
+const pageDescriptions: Partial<Record<Tab, string>> = {
+  overview: "Your personal assistant, activity, and memory in one workspace.",
+  live: "Follow your assistant's activity and inspect the details that matter.",
+  chat: "A clear conversation, with your assistant's work just a tap away.",
+  providers: "Connect models, manage credentials, and keep your assistant running.",
+  sessions: "Pick up a conversation or make room for your next idea.",
+  files: "Explore the files in your selected session's workspace.",
+  tools: "Choose which tools your assistant can use.",
+  skills: "Give your assistant instructions for the work you do most.",
+  memory: "Review, organize, and refine what your assistant remembers.",
+  schedules: "Manage recurring tasks and review their activity.",
+  settings: "Make your workspace, preferences, and assistant your own.",
+};
 function IntelligenceOrb() {
   return <div className="intelligence-orb" aria-hidden="true">
     <div className="orb-halo" />
@@ -107,18 +122,18 @@ function QuestionCard({ question, onAnswer }: { question: Row; onAnswer: (answer
     if (sending || submitted || !value.trim()) return;
     setSending(true); setFailure("");
     try { await onAnswer(value); setSubmitted(true); }
-    catch (error) { setFailure(error instanceof Error ? error.message : "Jawaban belum tersimpan"); }
+    catch (error) { setFailure(error instanceof Error ? error.message : "Your answer could not be saved"); }
     finally { setSending(false); }
   };
   const details = question.details as { label: string; description?: string }[] | undefined;
   const options = details ?? (question.options as string[] ?? []).map(label => ({ label, description: "" }));
-  return <section className="decision-card" aria-label="Pertanyaan Pansa">
-    <div className="decision-eyebrow"><MessageSquare size={14} /> {submitted ? "JAWABAN TERSIMPAN" : "PILIHAN ANDA"}<span><Clock size={12} /> 5 menit</span></div>
+  return <section className="decision-card" aria-label="Question from Pansa">
+    <div className="decision-eyebrow"><MessageSquare size={14} /> {submitted ? "ANSWER SAVED" : "YOUR CHOICE"}<span><Clock size={12} /> 5 minutes</span></div>
     <h3>{String(question.question)}</h3>
-    {submitted ? <p className="decision-success"><Check size={15} /> Terima kasih. Pansa melanjutkan pekerjaan.</p> : <>
+    {submitted ? <p className="decision-success"><Check size={15} /> Thank you. Pansa is continuing your task.</p> : <>
       <div className="decision-options">{options.map((option, index) => <button key={option.label} disabled={sending} onClick={() => void select(option.label)}><span className="decision-number">{index + 1}</span><span><strong>{option.label}{question.default === option.label && <small>Default</small>}</strong>{option.description && <p>{option.description}</p>}</span><ArrowUpRight size={15} /></button>)}</div>
-      {question.allow_free !== false && <form className="decision-free" onSubmit={event => { event.preventDefault(); void select(answer); }}><input aria-label="Jawaban Anda sendiri" placeholder="Atau tulis jawaban Anda sendiri…" value={answer} onChange={event => setAnswer(event.target.value)} maxLength={4000} disabled={sending} /><button className="btn" disabled={sending || !answer.trim()} aria-label="Kirim jawaban">{sending ? <Loader2 size={15} className="spin" /> : <ArrowRight size={15} />}</button></form>}
-      <p className="decision-note">{question.default ? `Jika tidak dijawab, otomatis memilih ${String(question.default)}.` : "Task dihentikan jika tidak ada jawaban dalam 5 menit."}</p>
+      {question.allow_free !== false && <form className="decision-free" onSubmit={event => { event.preventDefault(); void select(answer); }}><input aria-label="Your own answer" placeholder="Or write your own answer…" value={answer} onChange={event => setAnswer(event.target.value)} maxLength={4000} disabled={sending} /><button className="btn" disabled={sending || !answer.trim()} aria-label="Submit answer">{sending ? <Loader2 size={15} className="spin" /> : <ArrowRight size={15} />}</button></form>}
+      <p className="decision-note">{question.default ? `If unanswered, ${String(question.default)} will be selected automatically.` : "The task will stop if no answer is received within 5 minutes."}</p>
     </>}
     {failure && <p className="error" role="alert">{failure}</p>}
   </section>;
@@ -134,14 +149,14 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
     catch { setFailed(true); }
     if (reset.current) clearTimeout(reset.current);
     reset.current = setTimeout(() => { setCopied(false); setFailed(false); }, 2000);
-  }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Tersalin" : failed ? "Pilih dan salin manual" : "Salin kode"}</button></div><pre className="code-block" ref={pre}>{children}</pre></div>;
+  }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied" : failed ? "Select and copy manually" : "Copy code"}</button></div><pre className="code-block" ref={pre}>{children}</pre></div>;
 }
 function Rich({ text }: { text: string }) {
   return <div className="rich-content"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
     pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
     a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
     table: ({ children }) => <div className="rich-table"><table>{children}</table></div>,
-    img: ({ alt }) => <span className="muted">{alt || "Gambar"}</span>,
+    img: ({ alt }) => <span className="muted">{alt || "Image"}</span>,
   }}>{text}</ReactMarkdown></div>;
 }
 function ActionBlock({
@@ -178,7 +193,7 @@ function ActionBlock({
               ? String(v)
               : Array.isArray(v)
                 ? `[${v.length}]`
-                : "objek";
+                : "object";
         return [k, text.length > 90 ? `${text.slice(0, 90)}…` : text] as const;
       })
       .filter(([, v]) => v !== "");
@@ -210,18 +225,18 @@ function ActionBlock({
       {output ? (
         summary ? (
           <details className="action-raw">
-            <summary>Output mentah</summary>
+            <summary>Raw output</summary>
             <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
           </details>
         ) : (
           <pre className="action-out">{output.length > 3000 ? `${output.slice(0, 3000)}\n…` : output}</pre>
         )
       ) : (
-        <p className="muted text-xs mt-2">Belum ada output.</p>
+        <p className="muted text-xs mt-2">No output yet.</p>
       )}
       {onOpen && (
         <button className="btn mt-2" onClick={onOpen}>
-          <Terminal size={11} /> Buka di Console
+          <Terminal size={11} /> Open in Console
         </button>
       )}
     </details>
@@ -351,7 +366,7 @@ function shorten(text: string, max = 40) {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
 }
-const DEFAULT_TIMEZONE = "Asia/Jakarta";
+const DEFAULT_TIMEZONE = "UTC";
 const FALLBACK_ZONES = [
   "Asia/Jakarta",
   "Asia/Makassar",
@@ -388,7 +403,7 @@ function zoneList() {
 }
 function zoneLabel(zone: string) {
   try {
-    const parts = new Intl.DateTimeFormat("id-ID", {
+    const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: zone,
       timeZoneName: "short",
     }).formatToParts(new Date());
@@ -424,9 +439,9 @@ function fmtTime(
   const stamp = parseStamp(value);
   if (!stamp || Number.isNaN(stamp.getTime())) return "";
   try {
-    return stamp.toLocaleTimeString("id-ID", { ...opts, timeZone: zone });
+    return stamp.toLocaleTimeString("en-GB", { ...opts, timeZone: zone });
   } catch {
-    return stamp.toLocaleTimeString("id-ID", opts);
+    return stamp.toLocaleTimeString("en-GB", opts);
   }
 }
 function fmtDate(value: unknown, zone: string, opts?: Intl.DateTimeFormatOptions) {
@@ -440,9 +455,9 @@ function fmtDate(value: unknown, zone: string, opts?: Intl.DateTimeFormatOptions
     minute: "2-digit",
   };
   try {
-    return stamp.toLocaleString("id-ID", { ...format, timeZone: zone });
+    return stamp.toLocaleString("en-GB", { ...format, timeZone: zone });
   } catch {
-    return stamp.toLocaleString("id-ID", format);
+    return stamp.toLocaleString("en-GB", format);
   }
 }
 function shortDate(raw: string, zone: string) {
@@ -482,7 +497,7 @@ function SessionPicker({
     menu = useRef<HTMLDivElement>(null);
   const options = useMemo(
     () => [
-      { id: "", label: "Session baru", meta: "", fresh: true },
+      { id: "", label: "New session", meta: "", fresh: true },
       ...sessions.map((s) => ({
         id: String(s.id),
         label: shorten(String(s.title ?? "")),
@@ -494,7 +509,7 @@ function SessionPicker({
   );
   const current = options.find((o) => o.id === value) ?? options[0] ?? {
     id: "",
-    label: "Session baru",
+    label: "New session",
     meta: "",
     fresh: true,
   };
@@ -633,7 +648,7 @@ function SessionPicker({
               </Fragment>
             ))}
             {!sessions.length && (
-              <div className="session-empty">Belum ada session tersimpan.</div>
+              <div className="session-empty">No saved sessions yet.</div>
             )}
           </div>,
           document.body,
@@ -677,11 +692,22 @@ export default function Dashboard() {
   const [token, setToken] = useState(""),
     [logged, setLogged] = useState(false),
     [tab, setTab] = useState<Tab>("overview"),
-    [lang, setLang] = useState<"id" | "en">("id"),
+    [lang, setLang] = useState<"id" | "en">("en"),
     [theme, setTheme] = useState<"dark" | "light">("dark"),
     [navOpen, setNavOpen] = useState(false);
   const [profileDocs, setProfileDocs] = useState<Record<string, string>>({ soul: "", user: "", memory: "" });
   const [memoryEdit, setMemoryEdit] = useState<Record<string, { key: string; content: string }>>({});
+  useEffect(() => {
+    const syncViewport = () => {
+      const height = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty("--workspace-viewport-height", `${height}px`);
+      const field = document.activeElement;
+      const editing = field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement;
+      document.documentElement.dataset.keyboardOpen = String(editing && window.innerHeight - height > 120);
+    };
+    syncViewport(); window.addEventListener("resize", syncViewport); window.visualViewport?.addEventListener("resize", syncViewport); document.addEventListener("focusin", syncViewport); document.addEventListener("focusout", syncViewport);
+    return () => { window.removeEventListener("resize", syncViewport); window.visualViewport?.removeEventListener("resize", syncViewport); document.removeEventListener("focusin", syncViewport); document.removeEventListener("focusout", syncViewport); document.documentElement.style.removeProperty("--workspace-viewport-height"); delete document.documentElement.dataset.keyboardOpen; };
+  }, []);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 900px)");
     const sync = () => { setMobileViewport(media.matches); if (!media.matches) setNavOpen(false); };
@@ -758,16 +784,15 @@ export default function Dashboard() {
       timezone: DEFAULT_TIMEZONE,
     }),
     [settingsInfo, setSettingsInfo] = useState<Row>({}),
-    [schedule, setSchedule] = useState({ cron: "0 9 * * *", prompt: "" }),
-    [form, setForm] = useState({
-      name: "",
-      base_url: "https://api.openai.com/v1",
-      api_key: "",
-      model: "",
-    });
+    [schedule, setSchedule] = useState({ cron: "0 9 * * *", prompt: "" });
+  const [providerEditing, setProviderEditing] = useState<Row | undefined>();
+  const [providerQuery, setProviderQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all");
   const buffer = useRef("");
   const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const fileUploadRef = useRef<HTMLInputElement>(null);
+  const memoryImportRef = useRef<HTMLInputElement>(null);
   const followLatest = useRef(true);
   const pageRef = useRef(1);
   const sizeRef = useRef(50);
@@ -795,10 +820,13 @@ export default function Dashboard() {
       if (response.status === 401) {
         if (url !== "auth" && url !== "auth/session") setLogged(false);
         throw new Error(
-          message ?? "Sesi berakhir. Masuk kembali dengan token admin.",
+          message ?? "Your session expired. Sign in again with your admin token.",
         );
       }
-      if (!response.ok) throw new Error(message ?? "Request gagal");
+      if (!response.ok) {
+        const fields = (data as { fields?: { path: string; message: string }[] }).fields;
+        throw new Error(fields?.length ? fields.map(field => `${field.path}: ${field.message}`).join(" · ") : message ?? "Request failed");
+      }
       return data;
     },
     [],
@@ -849,7 +877,7 @@ export default function Dashboard() {
         credentials: "include",
       });
       const rows = (await response.json().catch(() => [])) as Row[];
-      if (!response.ok) throw new Error("Gagal memuat halaman event");
+      if (!response.ok) throw new Error("Unable to load activity");
       const total = Number(response.headers.get("x-total") ?? "");
       return {
         rows,
@@ -988,7 +1016,7 @@ export default function Dashboard() {
           setStream("");
         }
         if (e.type === "switch")
-          notify(`Provider berpindah: ${payload.reason}`);
+          notify(`Provider switched: ${payload.reason}`);
         if (e.type === "task" || e.type === "approval" || e.type === "usage")
           void refresh();
       };
@@ -1089,7 +1117,7 @@ export default function Dashboard() {
   }, [tab, logged, api]);
   const action = async (
     fn: () => Promise<unknown>,
-    message: string | null = "Tersimpan",
+    message: string | null = "Saved",
   ) => {
     setBusy(true);
     setError("");
@@ -1117,7 +1145,7 @@ export default function Dashboard() {
       setStream("");
       await api(`sessions/${id}/message`, { prompt: text });
       setPrompt("");
-    }, "Task dikirim");
+    }, "Task submitted");
   };
   const data = useCallback(
     (e: Row): Row =>
@@ -1205,23 +1233,23 @@ export default function Dashboard() {
   const sessionApprovals = approvals.filter(item => item.session_id === session);
   const sessionQuestions = sessionState.questions as Row[] ?? [];
   const lastTask = events.find(event => event.session_id === session && event.type === "task");
-  const taskFailure = !running && lastTask && data(lastTask).status === "error" ? String(data(lastTask).error ?? "Permintaan belum berhasil diselesaikan. Silakan coba lagi.") : "";
+  const taskFailure = !running && lastTask && data(lastTask).status === "error" ? String(data(lastTask).error ?? "Your request could not be completed. Please try again.") : "";
   const liveActivity = useMemo(() => {
-    if (sessionApprovals.length) return { label: "Menunggu persetujuan Anda", detail: "Tinjau tindakan di bawah untuk melanjutkan.", waiting: true };
-    if (sessionQuestions.length) return { label: "Menunggu jawaban Anda", detail: "Pilih opsi atau tulis jawaban pada kartu pertanyaan.", waiting: true };
+    if (sessionApprovals.length) return { label: "Waiting for your approval", detail: "Review the action below to continue.", waiting: true };
+    if (sessionQuestions.length) return { label: "Waiting for your answer", detail: "Choose an option or write your answer below.", waiting: true };
     const latest = events.filter(event => event.session_id === session);
     const task = latest.find(event => event.type === "task");
     const latestTool = latest.find(event => event.type === "tool" && Number(event.id) > Number(task?.id ?? 0));
     if (latestTool && data(latestTool).status === "running") {
       const payload = data(latestTool);
       const name = String(payload.name ?? payload.tool ?? "tool");
-      const labels: Record<string, string> = { web_fetch: "Membaca halaman web", http_request: "Mengambil data web", web_search: "Mencari di web", bash: "Menjalankan perintah", run_python: "Menganalisis data", run_node: "Menjalankan kode", read_file: "Membaca berkas", write_file: "Menulis berkas", edit_file: "Memperbarui berkas" };
+      const labels: Record<string, string> = { web_fetch: "Reading a web page", http_request: "Fetching web data", web_search: "Searching the web", bash: "Running a command", run_python: "Analyzing data", run_node: "Running code", read_file: "Reading a file", write_file: "Writing a file", edit_file: "Updating a file" };
       let detail = name.replace(/_/g, " ");
       const url = (payload.args as Row | undefined)?.url;
       if (url) { try { detail = new URL(String(url)).hostname; } catch {} }
-      return { label: labels[name] ?? "Menjalankan langkah", detail, waiting: false };
+      return { label: labels[name] ?? "Working on your task", detail, waiting: false };
     }
-    return { label: stream ? "Menyusun jawaban" : "Sedang berpikir", detail: "Pansa sedang mengerjakan permintaan Anda.", waiting: false };
+    return { label: stream ? "Composing a response" : "Thinking", detail: "Pansa is working on your request.", waiting: false };
   }, [events, session, data, stream, sessionApprovals.length, sessionQuestions.length]);
   const transcript = useMemo(
     () =>
@@ -1266,7 +1294,7 @@ export default function Dashboard() {
       await navigator.clipboard.writeText(text);
       notify(label);
     } catch {
-      setError("Clipboard tidak tersedia di browser ini");
+      setError("Clipboard access is unavailable in this browser");
     }
   };
   const download = () => {
@@ -1276,7 +1304,7 @@ export default function Dashboard() {
     a.download = `pansa-${session.slice(0, 8) || "chat"}.md`;
     a.click();
     URL.revokeObjectURL(a.href);
-    notify("Transkrip diunduh");
+    notify("Transcript downloaded");
   };
   const activity = events.filter((e) => e.type !== "token").slice(0, 8);
   const chart = Array.from({ length: 12 }, (_, i) => {
@@ -1292,7 +1320,7 @@ export default function Dashboard() {
       );
     });
     return {
-      time: new Date(time).toLocaleTimeString("id-ID", {
+      time: new Date(time).toLocaleTimeString("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
         timeZone: zone,
@@ -1302,7 +1330,7 @@ export default function Dashboard() {
     };
   });
   const Feed = ({ all = false, rows }: { all?: boolean; rows?: Row[] }) => (
-    <div className={all ? "" : "feed"} tabIndex={all ? undefined : 0} aria-label={all ? undefined : "Aktivitas terbaru"}>
+    <div className={all ? "" : "feed"} role={all ? undefined : "region"} tabIndex={all ? undefined : 0} aria-label={all ? undefined : "Recent activity"}>
       <AnimatePresence initial={false}>
         {(rows ??
           (all
@@ -1376,13 +1404,13 @@ export default function Dashboard() {
   );
   if (!logged)
     return (
-      <div className="login">
+      <main className="login">
         <section className="login-story">
           <div className="eyebrow">YOUR PERSONAL INTELLIGENCE</div>
-          <h1>Satu ruang.<br /><span>Segala kemungkinan.</span></h1>
-          <p>Percakapan, ide, dan pekerjaan Anda. Terhubung dalam asisten pribadi yang sepenuhnya milik Anda.</p>
+          <h1>Your space.<br /><span>Endless possibilities.</span></h1>
+          <p>Your conversations, ideas, and work. Connected through a personal assistant that belongs entirely to you.</p>
           <IntelligenceOrb />
-          <div className="login-promises"><span><Shield size={15} /> Self-hosted</span><span><MemoryStick size={15} /> Memori personal</span><span><Zap size={15} /> Aksi nyata</span></div>
+          <div className="login-promises"><span><Shield size={15} /> Self-hosted</span><span><MemoryStick size={15} /> Personal memory</span><span><Zap size={15} /> Real action</span></div>
         </section>
         <form
           className="panel login-card"
@@ -1392,7 +1420,7 @@ export default function Dashboard() {
               await api("auth", { token });
               setToken("");
               setLogged(true);
-            }, "Selamat datang");
+            }, "Welcome back");
           }}
         >
           <div className="brand">
@@ -1401,30 +1429,29 @@ export default function Dashboard() {
             </span>
             Pansa<em>OS</em>
           </div>
-          <h1 className="text-xl">{t.login}</h1>
+          <h2 className="text-xl">{t.login}</h2>
           <p className="muted mt-2 text-xs">{t.tagline}</p>
-          <label className="login-label" htmlFor="admin-token">Token akses Anda</label>
+          <label className="login-label" htmlFor="admin-token">Your access token</label>
           <input
             id="admin-token"
             type="password"
             autoComplete="current-password"
-            aria-label="Token admin"
-            placeholder="Token admin dari installer"
+            placeholder="Admin token from your installation"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             required
           />
           {error && <p className="error">{error}</p>}
           <button className="btn primary" disabled={busy}>
-            {busy ? <><Loader2 size={15} className="spin" /> Menghubungkan…</> : <>Buka workspace <ArrowRight size={15} /></>}
+            {busy ? <><Loader2 size={15} className="spin" /> Connecting…</> : <>Open workspace <ArrowRight size={15} /></>}
           </button>
-          <p className="login-security"><Shield size={13} /> Akses pribadi. Data tetap di server Anda.</p>
+          <p className="login-security"><Shield size={13} /> Private access. Your data stays on your server.</p>
         </form>
-      </div>
+      </main>
     );
   return (
     <div className={navOpen ? "app nav-open" : "app"}>
-      <a href="#workspace-content" className="skip-link">Langsung ke konten</a>
+      <a href="#workspace-content" className="skip-link">Skip to content</a>
       <div className="ambient-light" aria-hidden="true" />
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
       <aside className="sidebar" ref={sidebarRef} inert={mobileViewport && !navOpen} role={mobileViewport && navOpen ? "dialog" : undefined} aria-modal={mobileViewport && navOpen ? true : undefined} aria-label="Navigation workspace">
@@ -1484,8 +1511,8 @@ export default function Dashboard() {
         <div className="sidebar-bottom">
           <div className="system-box">
             <span className="status-dot" />
-            {connected ? "Semua sistem terhubung" : "Menghubungkan realtime"}
-            <p>Self-hosted. Sepenuhnya milikmu.</p>
+            {connected ? "All systems connected" : "Connecting to realtime"}
+            <p>Self-hosted. Entirely yours.</p>
             <div className="flex justify-between mt-3 text-[9px] muted">
               <span>CORE ENGINE</span>
               <span style={{ color: "var(--cyan)" }}>
@@ -1495,10 +1522,10 @@ export default function Dashboard() {
           </div>
           <div className="flex justify-between items-center pt-5 text-[10px] muted">
             <span>
-              Dokumentasi <ExternalLink size={10} className="inline ml-1" />
+              Documentation <ExternalLink size={10} className="inline ml-1" />
             </span>
             <button
-              aria-label="Keluar"
+              aria-label="Sign out"
               onClick={() => {
                 void api("auth/logout", {});
                 setLogged(false);
@@ -1514,7 +1541,7 @@ export default function Dashboard() {
         <header className="topbar">
           <button
             className="icon-btn menu"
-            aria-label="Buka menu"
+            aria-label="Open menu"
             onClick={() => setNavOpen(true)}
           >
             <Menu size={17} />
@@ -1526,19 +1553,19 @@ export default function Dashboard() {
           <div className="top-actions">
             <span>
               <span className="status-dot" />
-              {Number(stats.running) > 0 ? "Agent bekerja" : "Agent siap"}
+              {Number(stats.running) > 0 ? "Agent working" : "Agent ready"}
             </span>
             <span className="keycap">SELF-HOSTED</span>
             <button
               className="icon-btn theme"
-              aria-label={theme === "dark" ? "Mode terang" : "Mode gelap"}
+              aria-label={theme === "dark" ? "Light mode" : "Dark mode"}
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
             >
               {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
             </button>
             <button
               className="icon-btn theme"
-              aria-label="Notifikasi"
+              aria-label="Notifications"
               onClick={() => setTab("live")}
             >
               <Bell size={15} />
@@ -1559,9 +1586,7 @@ export default function Dashboard() {
                 <span className="text-[var(--violet)]">.</span>
               </h1>
               <p>
-                {tab === "overview"
-                  ? "Asisten pribadi, aktivitas, dan memori dalam satu ruang kendali."
-                  : t.tagline}
+                  {pageDescriptions[tab] ?? t.tagline}
               </p>
             </div>
             <div className="title-actions">
@@ -1569,18 +1594,19 @@ export default function Dashboard() {
                 className="btn icon-only"
                 aria-label="Refresh"
                 title="Refresh"
-                onClick={() => void action(refresh, "Data diperbarui")}
+                onClick={() => void action(refresh, "Data refreshed")}
               >
                 <RefreshCw size={12} /> <span className="label">Refresh</span>
               </button>
               <button
                 className="btn primary"
                 onClick={() => {
+                  if (tab === "providers") { setProviderEditing(undefined); setShowForm(true); return; }
                   setTab("chat");
                   setSession("");
                 }}
               >
-                <Plus size={13} /> Task baru
+                <Plus size={13} /> {tab === "providers" ? "Add provider" : "New task"}
               </button>
             </div>
           </div>
@@ -1594,40 +1620,40 @@ export default function Dashboard() {
                 <>
                   <section className="workspace-hero">
                     <div className="hero-copy">
-                      <div className={`hero-status ${connected ? "online" : ""}`}><span className="status-dot" />{connected ? "WORKSPACE TERHUBUNG" : "MENGHUBUNGKAN WORKSPACE"}</div>
-                      <h2>Ruang untuk ide.<br /><span>Tenaga untuk mewujudkan.</span></h2>
-                      <p>Dari percakapan sederhana hingga pekerjaan besar. Pansa membantu Anda berpikir, mengingat, dan bergerak maju.</p>
-                      <button className="btn primary hero-cta" onClick={() => { setTab("chat"); setSession(""); }}><Sparkles size={16} /> Mulai percakapan <ArrowUpRight size={16} /></button>
+                      <div className={`hero-status ${connected ? "online" : ""}`}><span className="status-dot" />{connected ? "WORKSPACE CONNECTED" : "CONNECTING WORKSPACE"}</div>
+                      <h2>Room for ideas.<br /><span>Power to make them happen.</span></h2>
+                      <p>From everyday conversations to ambitious projects. Pansa helps you think, remember, and move forward.</p>
+                      <button className="btn primary hero-cta" onClick={() => { setTab("chat"); setSession(""); }}><Sparkles size={16} /> Start a conversation <ArrowUpRight size={16} /></button>
                     </div>
                     <IntelligenceOrb />
-                    <div className="hero-bottom"><span><Shield size={13} /> Server Anda. Kendali Anda.</span><span>{sessions.length} sesi <i /> {providers.filter(provider => provider.enabled).length} provider aktif</span></div>
+                    <div className="hero-bottom"><span><Shield size={13} /> Your server. Your control.</span><span>{sessions.length} sessions <i /> {providers.filter(provider => provider.enabled).length} active providers</span></div>
                   </section>
-                  <div className="overview-section-heading"><h2>Workspace dalam angka</h2><span><Activity size={13} /> Data aktivitas aktual</span></div>
+                  <div className="overview-section-heading"><h2>Your workspace at a glance</h2><span><Activity size={13} /> Actual activity data</span></div>
                   <div className="stats">
                     {[
                       [
                         "Total events",
                         stats.events ?? 0,
                         Activity,
-                        "Aktivitas tercatat",
+                        "Recorded activity",
                       ],
                       [
-                        "Token terpakai",
+                        "Tokens used",
                         stats.tokens ?? 0,
                         Zap,
-                        "Seluruh provider",
+                        "Across all providers",
                       ],
                       [
-                        "Estimasi biaya",
+                        "Estimated cost",
                         stats.cost ?? 0,
                         DollarSign,
-                        "USD · berdasarkan konfigurasi",
+                        "USD · based on your configuration",
                       ],
                       [
                         "Tool executions",
                         stats.tools ?? 0,
                         Terminal,
-                        "Eksekusi & hasil tool",
+                        "Tool executions and results",
                       ],
                       [
                         "Auto switches",
@@ -1665,7 +1691,7 @@ export default function Dashboard() {
                     <section className="panel">
                       <div className="panel-header">
                         <h2>
-                          <Activity size={14} /> Penggunaan token{" "}
+                          <Activity size={14} /> Token usage{" "}
                           <span className="badge ml-2">REALTIME</span>
                         </h2>
                         <div className="chart-legend">
@@ -1674,7 +1700,7 @@ export default function Dashboard() {
                             Tokens
                           </span>
                           <span>
-                            60 menit{" "}
+                            60 minutes{" "}
                             <ChevronDown size={10} className="inline" />
                           </span>
                         </div>
@@ -1744,7 +1770,7 @@ export default function Dashboard() {
                     <section className="panel">
                       <div className="panel-header">
                         <h2>
-                          <Network size={14} /> Arsitektur live
+                          <Network size={14} /> Live architecture
                         </h2>
                         <small>
                           <span className="status-dot !w-1 !h-1" /> LIVE FLOW
@@ -1757,14 +1783,14 @@ export default function Dashboard() {
                     <section className="panel">
                       <div className="panel-header">
                         <h2>
-                          <Radio size={14} /> Aktivitas terbaru{" "}
+                          <Radio size={14} /> Recent activity{" "}
                           <span className="badge ml-2">LIVE</span>
                         </h2>
                         <button
                           className="text-[10px] text-[var(--text-2)] flex gap-2 items-center"
                           onClick={() => setTab("live")}
                         >
-                          Lihat semua <ArrowUpRight size={12} />
+                          View all <ArrowUpRight size={12} />
                         </button>
                       </div>
                       <Feed />
@@ -1778,7 +1804,7 @@ export default function Dashboard() {
                           className="text-[10px] text-[var(--text-2)]"
                           onClick={() => setTab("providers")}
                         >
-                          Kelola <ArrowUpRight size={12} className="inline" />
+                          Manage <ArrowUpRight size={12} className="inline" />
                         </button>
                       </div>
                       {providers.length ? (
@@ -1820,7 +1846,7 @@ export default function Dashboard() {
                             className="btn mt-4"
                             onClick={() => setTab("providers")}
                           >
-                            <Plus size={12} /> Tambah provider
+                            <Plus size={12} /> Add provider
                           </button>
                         </div>
                       )}
@@ -1839,8 +1865,8 @@ export default function Dashboard() {
                       <Radio size={15} /> Event stream
                     </h2>
                     <input
-                      aria-label="Cari event"
-                      placeholder="Cari event..."
+                      aria-label="Search activity"
+                      placeholder="Search activity…"
                       value={query}
                       onChange={(e) => {
                         const value = e.target.value;
@@ -1856,8 +1882,8 @@ export default function Dashboard() {
                   </div>
                   {query && (
                     <p className="pager-note">
-                      Pencarian mencakup seluruh riwayat event di server.
-                      {totalEvents !== null ? ` ${totalEvents} event cocok.` : ""}
+                      Search includes the full activity history on your server.
+                      {totalEvents !== null ? ` ${totalEvents} matching events.` : ""}
                     </p>
                   )}
                   {pending > 0 && pageNo > 1 && (
@@ -1865,8 +1891,7 @@ export default function Dashboard() {
                       className="btn new-events ml-5 mr-5 mt-4"
                       onClick={() => void resetPages(pageSize, query)}
                     >
-                      <Bell size={12} /> {pending} event baru — kembali ke
-                      halaman 1
+                      <Bell size={12} /> {pending} new events — return to page 1
                     </button>
                   )}
                   <Feed all rows={pageCache[pageNo] ?? []} />
@@ -1876,14 +1901,14 @@ export default function Dashboard() {
                       disabled={pageNo === 1 || pageBusy}
                       onClick={() => void loadPage(pageNo - 1)}
                     >
-                      <ChevronLeft size={13} /> Sebelumnya
+                      <ChevronLeft size={13} /> Previous
                     </button>
                     <span className="pager-info">
-                      Halaman {pageNo}
+                      Page {pageNo}
                       {totalEvents !== null
-                        ? ` dari ${Math.max(1, Math.ceil(totalEvents / pageSize))}`
+                        ? ` of ${Math.max(1, Math.ceil(totalEvents / pageSize))}`
                         : hasMore
-                          ? " · masih ada event lama"
+                          ? " · older events available"
                           : ""}
                     </span>
                     <button
@@ -1891,12 +1916,12 @@ export default function Dashboard() {
                       disabled={!hasMore || pageBusy}
                       onClick={() => void loadPage(pageNo + 1)}
                     >
-                      Berikutnya <ChevronRight size={13} />
+                      Next <ChevronRight size={13} />
                     </button>
                     <label className="pager-size">
-                      <span>Per halaman</span>
+                      <span>Per page</span>
                       <select
-                        aria-label="Jumlah event per halaman"
+                        aria-label="Events per page"
                         value={pageSize}
                         onChange={(e) => {
                           const size = Number(e.target.value);
@@ -1923,7 +1948,7 @@ export default function Dashboard() {
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!session) {
-                          setError("Pilih atau buat session dulu di Chat.");
+                          setError("Choose or create a session in Chat first.");
                           return;
                         }
                         void action(
@@ -1933,16 +1958,16 @@ export default function Dashboard() {
                               prompt: schedule.prompt,
                               session_id: session,
                             }),
-                          "Jadwal dibuat",
+                          "Schedule created",
                         ).then(() => setSchedule({ ...schedule, prompt: "" }));
                       }}
                     >
                       <select
-                        aria-label="Session jadwal"
+                        aria-label="Schedule session"
                         value={session}
                         onChange={(e) => setSession(e.target.value)}
                       >
-                        <option value="">Pilih session</option>
+                        <option value="">Select a session</option>
                         {sessions.map((s) => (
                           <option key={String(s.id)} value={String(s.id)}>
                             {String(s.title)}
@@ -1960,8 +1985,8 @@ export default function Dashboard() {
                       />
                       <input
                         className="flex-1"
-                        aria-label="Prompt jadwal"
-                        placeholder="Prompt yang dijalankan otomatis"
+                        aria-label="Scheduled prompt"
+                        placeholder="Task to run automatically"
                         value={schedule.prompt}
                         onChange={(e) =>
                           setSchedule({ ...schedule, prompt: e.target.value })
@@ -1969,7 +1994,7 @@ export default function Dashboard() {
                         required
                       />
                       <button className="btn primary" disabled={busy}>
-                        <Plus size={12} /> Tambah jadwal
+                        <Plus size={12} /> Add schedule
                       </button>
                     </form>
                     {items.map((s) => (
@@ -1979,17 +2004,17 @@ export default function Dashboard() {
                             <Clock size={12} className="inline mr-2" />
                             {String(s.cron)}
                             <span className="badge ml-2">
-                              {s.enabled ? "aktif" : "off"}
+                              {s.enabled ? "enabled" : "disabled"}
                             </span>
                           </h3>
                           <p className="muted text-xs mt-2">
                             {String(s.prompt)}
                           </p>
                           <p className="text-[10px] muted mt-1">
-                            Session {String(s.session_id)} · terakhir{" "}
+                            Session {String(s.session_id)} · last run{" "}
                             {Number(s.last_run)
                               ? fmtDate(Number(s.last_run), zone)
-                              : "belum pernah"}
+                              : "never"}
                           </p>
                         </div>
                         <div className="flex gap-2">
@@ -2003,15 +2028,15 @@ export default function Dashboard() {
                                     { enabled: !s.enabled },
                                     "PATCH",
                                   ),
-                                "Jadwal diperbarui",
+                                "Schedule updated",
                               )
                             }
                           >
-                            {s.enabled ? "Nonaktifkan" : "Aktifkan"}
+                            {s.enabled ? "Disable" : "Enable"}
                           </button>
                           <button
                             className="btn danger"
-                            aria-label="Hapus jadwal"
+                            aria-label="Delete schedule"
                             onClick={() =>
                               void action(async () => {
                                 await api(
@@ -2020,7 +2045,7 @@ export default function Dashboard() {
                                   "DELETE",
                                 );
                                 setItems(items.filter((i) => i.id !== s.id));
-                              }, "Jadwal dihapus")
+                              }, "Schedule deleted")
                             }
                           >
                             <Trash2 size={13} />
@@ -2030,8 +2055,7 @@ export default function Dashboard() {
                     ))}
                     {!items.length && (
                       <div className="empty">
-                        Belum ada jadwal. Maintenance otomatis berjalan lewat
-                        runner @boxd/run.
+                        No scheduled tasks yet.
                       </div>
                     )}
                   </section>
@@ -2048,7 +2072,7 @@ export default function Dashboard() {
               {tab === "chat" && (
                 <section className="panel generic chat-panel">
                   <div className="toolbar chat-toolbar">
-                    {session && <select aria-label="Mode session" value={String(sessionState.mode ?? "build")} onChange={e => { void api(`sessions/${session}/mode`, { mode: e.target.value }).then(() => setSessionState(prev => ({ ...prev, mode: e.target.value }))); }}><option value="plan">Plan · hanya baca</option><option value="build">Build · approval perubahan</option><option value="ask">Ask · tanya keputusan</option></select>}
+                    {session && <select aria-label="Session mode" value={String(sessionState.mode ?? "build")} onChange={e => { const mode = e.target.value; void api(`sessions/${session}/mode`, { mode }).then(() => setSessionState(prev => ({ ...prev, mode }))); }}><option value="plan">Plan · read only</option><option value="build">Build · session execution permissions</option><option value="ask">Ask · approve each action</option></select>}
                       <SessionPicker
                         sessions={sessions}
                         value={session}
@@ -2061,7 +2085,7 @@ export default function Dashboard() {
                          setStick(true);
                       }}
                     />
-                    <div className="seg" role="tablist" aria-label="Mode tampilan">
+                    <div className="seg" role="tablist" aria-label="View mode">
                       <button
                         role="tab"
                         aria-selected={view === "chat"}
@@ -2083,23 +2107,23 @@ export default function Dashboard() {
                       <span className="status-dot !w-1 !h-1" />
                       {connected ? "LIVE" : "offline"}
                     </span>
-                    <span className="chat-provider" title="Provider aktif">
+                    <span className="chat-provider" title="Active provider">
                       <Layers size={11} /> {activeProvider}
                     </span>
                     <div className="chat-actions">
                       <button
                         className="icon-btn"
-                        aria-label="Salin transkrip"
-                        title="Salin transkrip"
+                        aria-label="Copy transcript"
+                        title="Copy transcript"
                         disabled={!transcript}
-                        onClick={() => void copy(transcript, "Transkrip disalin")}
+                        onClick={() => void copy(transcript, "Transcript copied")}
                       >
                         <Copy size={13} />
                       </button>
                       <button
                         className="icon-btn"
-                        aria-label="Unduh transkrip"
-                        title="Unduh transkrip (.md)"
+                        aria-label="Download transcript"
+                        title="Download transcript (.md)"
                         disabled={!transcript}
                         onClick={download}
                       >
@@ -2125,7 +2149,7 @@ export default function Dashboard() {
                                   )?.id ?? 0,
                                 ),
                               }));
-                              if (r?.status !== "idle") notify("Task dihentikan");
+                              if (r?.status !== "idle") notify("Task stopped");
                               setStream("");
                             }, null)
                           }
@@ -2137,26 +2161,27 @@ export default function Dashboard() {
                   </div>
                   <div className="chat-shell">
                     {session && view === "console" && <div className="session-work-panel">
-                      <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} token · {(sessionState.usage as Row)?.cost == null ? "Biaya tidak diketahui" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
-                      {!!((sessionState.usage as Row)?.context) && <label>Konteks ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimasi)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
+                      <button className="btn" onClick={() => void action(() => api(`sessions/${session}/permissions`, undefined, "DELETE"), "Session permissions and auto-approve revoked")}><Shield size={13} /> Revoke session permissions</button>
+                      <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} tokens · {(sessionState.usage as Row)?.cost == null ? "Cost unknown" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
+                      {!!((sessionState.usage as Row)?.context) && <label>Context ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimated)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
                       {(sessionState.todos as Row[] ?? []).map((item, index) => <div key={index}>{item.status === "completed" ? "✓" : item.status === "in_progress" ? "◉" : "○"} {String(item.content)} · {String(item.status)}</div>)}
-                      {(sessionState.subagents as Row[] ?? []).map(task => <div key={String(task.id)}>Subagent {String(task.type)} · {String(task.status)} · sejak {fmtTime(task.since, zone)}</div>)}
+                      {(sessionState.subagents as Row[] ?? []).map(task => <div key={String(task.id)}>Subagent {String(task.type)} · {String(task.status)} · since {fmtTime(task.since, zone)}</div>)}
                       {!!(sessionState.checkpoints as Row[] ?? []).length && <details><summary>Checkpoint ({(sessionState.checkpoints as Row[]).length})</summary>{(sessionState.checkpoints as Row[]).map(cp => <div key={String(cp.id)}>{String(cp.name)} · {String(cp.time)} · {(cp.files as string[]).length} file</div>)}</details>}
-                      <details><summary>Command tersedia</summary>{commandList.map(command => <div key={command.name}>/{command.name} — {command.description}</div>)}</details>
-                      <button className="btn" onClick={() => setShowArchive(!showArchive)}>{showArchive ? "Tutup arsip" : "Buka arsip riwayat"}</button>
+                      <details><summary>Available commands</summary>{commandList.map(command => <div key={command.name}>/{command.name} — {command.description}</div>)}</details>
+                      <button className="btn" onClick={() => setShowArchive(!showArchive)}>{showArchive ? "Close archive" : "Open history archive"}</button>
                       <details><summary>MCP servers ({mcpServers.length})</summary>
-                        <p>Server stdio berjalan dalam sandbox session, tanpa Docker socket. Semua tool MCP memerlukan approval dan diblokir di mode Plan. Server remote mengelola aksesnya sendiri; jangan kirim secret atau path host.</p>
-                        {mcpServers.map(server => <div key={String(server.name)}>{String(server.name)} · {server.connected ? "terhubung" : "gagal"} · {Number(server.count)} tool {String(server.error ?? "")}<button className="btn" onClick={() => void api(`mcp/${server.name}`, undefined, "DELETE").then(() => api("mcp")).then(r => setMcpServers(r as Row[]))}>Hapus</button></div>)}
+                        <p>Stdio servers run in the session sandbox without the Docker socket. MCP tools require approval and are unavailable in Plan mode. Remote servers control their own access.</p>
+                        {mcpServers.map(server => <div key={String(server.name)}>{String(server.name)} · {server.connected ? "connected" : "failed"} · {Number(server.count)} tools {String(server.error ?? "")}<button className="btn" onClick={() => void api(`mcp/${server.name}`, undefined, "DELETE").then(() => api("mcp")).then(r => setMcpServers(r as Row[]))}>Delete</button></div>)}
                         <div className="mcp-form">
-                          <input aria-label="Nama MCP" placeholder="Nama server" value={mcpForm.name} onChange={e => setMcpForm({ ...mcpForm, name: e.target.value })} />
+                          <input aria-label="MCP name" placeholder="Server name" value={mcpForm.name} onChange={e => setMcpForm({ ...mcpForm, name: e.target.value })} />
                           <select aria-label="Transport MCP" value={mcpForm.transport} onChange={e => setMcpForm({ ...mcpForm, transport: e.target.value })}><option value="http">HTTP</option><option value="sse">SSE</option><option value="stdio">stdio sandbox</option></select>
-                          {mcpForm.transport === "stdio" ? <><input aria-label="Perintah MCP" placeholder="Perintah dalam sandbox" value={mcpForm.command} onChange={e => setMcpForm({ ...mcpForm, command: e.target.value })} /><input aria-label="Argumen MCP" placeholder={'Argumen JSON: ["/workspace/server.js"]'} value={mcpForm.args} onChange={e => setMcpForm({ ...mcpForm, args: e.target.value })} /></> : <><input aria-label="URL MCP" placeholder="https://server.example/mcp" value={mcpForm.url} onChange={e => setMcpForm({ ...mcpForm, url: e.target.value })} /><input type="password" autoComplete="off" aria-label="Header secret MCP" placeholder='Header JSON (disimpan terenkripsi)' value={mcpForm.headers} onChange={e => setMcpForm({ ...mcpForm, headers: e.target.value })} /></>}
+                          {mcpForm.transport === "stdio" ? <><input aria-label="MCP command" placeholder="Command inside the sandbox" value={mcpForm.command} onChange={e => setMcpForm({ ...mcpForm, command: e.target.value })} /><input aria-label="MCP arguments" placeholder={'JSON arguments: ["/workspace/server.js"]'} value={mcpForm.args} onChange={e => setMcpForm({ ...mcpForm, args: e.target.value })} /></> : <><input aria-label="MCP URL" placeholder="https://server.example/mcp" value={mcpForm.url} onChange={e => setMcpForm({ ...mcpForm, url: e.target.value })} /><input type="password" autoComplete="off" aria-label="MCP secret headers" placeholder='JSON headers (encrypted at rest)' value={mcpForm.headers} onChange={e => setMcpForm({ ...mcpForm, headers: e.target.value })} /></>}
                           <button className="btn" disabled={!session || !mcpForm.name} onClick={() => {
                             try {
                               const payload = { name: mcpForm.name, transport: mcpForm.transport, session, ...(mcpForm.transport === "stdio" ? { command: mcpForm.command, args: JSON.parse(mcpForm.args || "[]") } : { url: mcpForm.url, headers: JSON.parse(mcpForm.headers || "{}") }) };
                               void api("mcp", payload).then(r => { setMcpServers(r as Row[]); setMcpForm(prev => ({ ...prev, headers: "" })); }).catch(e => notify(String(e.message)));
-                            } catch { notify("Argumen/header harus JSON valid."); }
-                          }}>Simpan MCP</button>
+                            } catch { notify("Arguments and headers must be valid JSON."); }
+                          }}>Save MCP server</button>
                         </div>
                       </details>
                     </div>}
@@ -2165,22 +2190,22 @@ export default function Dashboard() {
                       ref={historyRef}
                       onScroll={onScroll}
                       role="region"
-                      aria-label={view === "chat" ? "Riwayat percakapan" : "Log eksekusi"}
+                      aria-label={view === "chat" ? "Conversation history" : "Execution log"}
                       tabIndex={0}
                     >
                       {!session && (
                         <div className="empty">
                           <Bot size={32} />
-                          <p>Brief masuk. Agent bergerak.</p>
+                          <p>Your ideas. Pansa's next move.</p>
                           <p className="mt-2 text-[10px]">
-                            Tulis pertanyaan atau tugas untuk memulai.
+                            Ask a question or describe a task to get started.
                           </p>
                         </div>
                       )}
                       {session && !conversation.length && !running && view === "chat" && (
                         <div className="empty">
                           <MessageSquare size={26} />
-                          <p>Belum ada percakapan di sesi ini.</p>
+                          <p>No messages in this session yet.</p>
                         </div>
                       )}
                       {view === "chat"
@@ -2195,7 +2220,7 @@ export default function Dashboard() {
                                   className={`bubble ${String(d.role ?? "")}`}
                                 >
                                   <span className="bubble-role">
-                                    {d.role === "user" ? "Anda" : "Pansa"}
+                                    {d.role === "user" ? "You" : "Pansa"}
                                   </span>
                                   <Rich text={text} />
                                 </div>
@@ -2250,15 +2275,18 @@ export default function Dashboard() {
                       {view === "chat" && running && <div className={`chat-activity${liveActivity.waiting ? " waiting" : ""}`} role="status" aria-live="polite">
                         <span className="activity-orbit" aria-hidden="true"><span /><span /><span /></span>
                         <div><strong key={liveActivity.label}>{liveActivity.label}<span className="activity-ellipsis" aria-hidden="true">…</span></strong><p>{liveActivity.detail}</p></div>
-                        <button type="button" onClick={() => setView("console")} aria-label="Lihat detail di Console">Detail <ArrowUpRight size={12} /></button>
+                        <button type="button" onClick={() => setView("console")} aria-label="View details in Console">Details <ArrowUpRight size={12} /></button>
                       </div>}
                       {view === "chat" && taskFailure && <div className="notice-row bad" role="alert"><Shield size={15} /><span>{taskFailure}</span></div>}
                       {sessionQuestions.map(question => <QuestionCard key={String(question.id)} question={question} onAnswer={answer => api(`questions/${question.id}`, { answer })} />)}
                       {sessionApprovals.map(approval => <div key={String(approval.id)} className="chat-approval decision-card">
-                        <div className="decision-eyebrow"><Shield size={14} /> PERSETUJUAN ANDA</div>
-                        <p>Pansa perlu izin untuk menjalankan <strong>{String(approval.tool).replace(/_/g, " ")}</strong>.</p>
-                        <details><summary>Lihat tindakan</summary><pre>{String(approval.args)}</pre></details>
-                        <div className="approval-actions"><button className="btn primary" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: true }), "Tindakan disetujui")}><Check size={14} /> Setujui</button><button className="btn" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: false }), "Tindakan ditolak")}><X size={14} /> Tolak</button></div>
+                        <div className="decision-eyebrow"><Shield size={14} /> APPROVAL REQUIRED</div>
+                        <p>Pansa needs permission to run <strong>{String(approval.tool).replace(/_/g, " ")}</strong>.</p>
+                        {!!approval.root && <p className="muted">Workspace: {String(approval.root)}</p>}
+                        {!!approval.notice && <p className="muted">{String(approval.notice)}</p>}
+                        <details><summary>Review action</summary><pre>{String(approval.args)}</pre></details>
+                        <div className="approval-actions"><button className="btn primary" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: true, duration: "once" }), "Action approved once")}><Check size={14} /> Allow once</button>{approval.allowSession === true && <button className="btn" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: true, duration: "session" }), "Execution allowed for this session and workspace")}><Shield size={14} /> Allow for session</button>}<button className="btn" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: false }), "Action denied")}><X size={14} /> Deny</button></div>
+                        {approval.allowSession === true && <p className="decision-note">Session permission applies to this workspace until core restarts or you revoke it in Console. Protected actions still require one-time approval.</p>}
                       </div>)}
                     </div>
                   </div>
@@ -2267,9 +2295,9 @@ export default function Dashboard() {
                       <button
                         className="chat-jump"
                         onClick={jump}
-                        aria-label="Ke pesan terbaru"
+                        aria-label="Jump to latest message"
                       >
-                        <ArrowDown size={13} /> Terbaru
+                        <ArrowDown size={13} /> Latest
                       </button>
                     </div>
                   )}
@@ -2282,7 +2310,7 @@ export default function Dashboard() {
                   >
                     <textarea
                       aria-label="Task"
-                      placeholder="Apa yang ingin Anda kerjakan hari ini?"
+                      placeholder="What would you like to work on today?"
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       onKeyDown={(e) => {
@@ -2304,154 +2332,15 @@ export default function Dashboard() {
                 </section>
               )}
               {tab === "providers" && (
-                <section className="panel generic">
-                  <div className="toolbar">
-                    <button
-                      className="btn primary"
-                      onClick={() => setShowForm(!showForm)}
-                    >
-                      <Plus size={13} /> Tambah provider
-                    </button>
-                    <span className="muted text-xs self-center">
-                      Key terenkripsi AES-256-GCM · auto failover aktif
-                    </span>
-                  </div>
-                  {showForm && (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        void action(async () => {
-                          await api("providers", form);
-                          setShowForm(false);
-                          setForm({ ...form, api_key: "" });
-                        });
-                      }}
-                    >
-                      <div className="form-grid">
-                        {(Object.keys(form) as (keyof typeof form)[]).map(
-                          (k) => (
-                            <input
-                              key={k}
-                              aria-label={k}
-                              placeholder={k}
-                              type={k === "api_key" ? "password" : "text"}
-                              value={form[k]}
-                              onChange={(e) =>
-                                setForm({ ...form, [k]: e.target.value })
-                              }
-                              required={k !== "api_key"}
-                            />
-                          ),
-                        )}
-                      </div>
-                      <button className="btn primary" disabled={busy}>
-                        Simpan provider
-                      </button>
-                    </form>
-                  )}
-                  {providers.map((p) => (
-                    <div className="list-card" key={String(p.id)}>
-                      <div>
-                        <h3>
-                          {String(p.name)}{" "}
-                          <span className="badge ml-2">
-                            {p.enabled ? "aktif" : "off"}
-                          </span>
-                        </h3>
-                        <p className="text-xs muted mt-2">
-                          {String(p.model)} · {String(p.api_key)} ·{" "}
-                          {Math.round(Number(p.latency))}ms
-                        </p>
-                        <p className="text-[10px] muted mt-2">
-                          Success{" "}
-                          {Number(p.attempts)
-                            ? Math.round(
-                                (Number(p.successes) / Number(p.attempts)) *
-                                  100,
-                              )
-                            : 0}
-                          % · priority {String(p.priority)}
-                        </p>
-                      </div>
-                      <div className="flex gap-2 items-center">
-                        <button
-                          className="btn"
-                          aria-label="Aktifkan atau matikan provider"
-                          onClick={() =>
-                            void action(
-                              () =>
-                                api(
-                                  `providers/${p.id}`,
-                                  {
-                                    enabled: !p.enabled,
-                                  },
-                                  "PATCH",
-                                ),
-                              p.enabled
-                                ? "Provider dimatikan"
-                                : "Provider aktif",
-                            )
-                          }
-                        >
-                          {p.enabled ? "Off" : "On"}
-                        </button>
-                        <input
-                          aria-label="Prioritas provider"
-                          className="!w-16 !py-2 text-center"
-                          type="number"
-                          value={Number(p.priority ?? 0)}
-                          onChange={(e) =>
-                            setProviders((prev) =>
-                              prev.map((x) =>
-                                x.id === p.id
-                                  ? { ...x, priority: e.target.value }
-                                  : x,
-                              ),
-                            )
-                          }
-                          onBlur={(e) =>
-                            void action(
-                              () =>
-                                api(
-                                  `providers/${p.id}`,
-                                  { priority: Number(e.target.value) || 0 },
-                                  "PATCH",
-                                ),
-                              "Prioritas disimpan",
-                            )
-                          }
-                        />
-                        <button
-                          className="btn"
-                          onClick={() =>
-                            void action(
-                              () => api(`providers/${p.id}/test`, {}),
-                              "Koneksi berhasil",
-                            )
-                          }
-                        >
-                          <Play size={12} /> Test
-                        </button>
-                        <button
-                          className="btn danger"
-                          aria-label="Hapus provider"
-                          onClick={() =>
-                            void action(() =>
-                              api(`providers/${p.id}`, undefined, "DELETE"),
-                            )
-                          }
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <section className="providers-page">
+                  <div className="providers-summary"><span><Layers size={15} /><strong>{providers.length}</strong> connections</span><span><span className="status-dot" /><strong>{providers.filter(provider => provider.enabled).length}</strong> enabled</span><span><Shield size={14} /> Encrypted credentials</span></div>
+                  <div className="providers-toolbar"><label className="provider-search"><Search size={16} /><input type="search" aria-label="Search providers" placeholder="Search by name, model, or endpoint…" value={providerQuery} onChange={event => setProviderQuery(event.target.value)} /></label><select aria-label="Filter provider status" value={providerFilter} onChange={event => setProviderFilter(event.target.value)}><option value="all">All connections</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div>
+                  {showForm && <ProviderForm key={String(providerEditing?.id ?? "new")} api={api} existing={providerEditing} onClose={() => { setShowForm(false); setProviderEditing(undefined); }} onSaved={refresh} />}
+                  <div className="provider-connections">{providers.filter(provider => (providerFilter === "all" || Boolean(provider.enabled) === (providerFilter === "enabled")) && `${provider.name} ${provider.model} ${provider.base_url} ${provider.adapter}`.toLowerCase().includes(providerQuery.toLowerCase().trim())).map(provider => <ProviderCard key={String(provider.id)} provider={provider} api={api} onEdit={() => { setProviderEditing(provider); setShowForm(true); }} onChanged={refresh} />)}</div>
                   {!providers.length && (
-                    <div className="empty">
-                      Belum ada provider. Tambahkan endpoint OpenAI-compatible
-                      atau Anthropic.
-                    </div>
+                    <div className="empty providers-empty"><Layers size={30} /><h2>Your next connection starts here.</h2><p>Bring a cloud provider or local model into your workspace.</p><button className="btn primary" onClick={() => { setProviderEditing(undefined); setShowForm(true); }}><Plus size={14} /> Connect a provider</button></div>
                   )}
+                  {providers.length > 0 && !providers.some(provider => (providerFilter === "all" || Boolean(provider.enabled) === (providerFilter === "enabled")) && `${provider.name} ${provider.model} ${provider.base_url} ${provider.adapter}`.toLowerCase().includes(providerQuery.toLowerCase().trim())) && <div className="empty providers-empty"><Search size={25} /><h2>No matching connections</h2><p>Try a different search or status filter.</p><button className="btn" onClick={() => { setProviderQuery(""); setProviderFilter("all"); }}>Clear filters</button></div>}
                 </section>
               )}
               {tab === "sessions" && (
@@ -2470,16 +2359,16 @@ export default function Dashboard() {
                             setTab("chat");
                           }}
                         >
-                          Buka <ArrowRight size={12} />
+                          Open <ArrowRight size={12} />
                         </button>
                         <button
                           className="btn danger"
-                          aria-label="Hapus sesi"
+                          aria-label="Delete session"
                           disabled={busy}
                           onClick={() => {
                             if (
                               !window.confirm(
-                                `Hapus sesi "${String(s.title)}"? Riwayat chat, memori, jadwal, dan workspace-nya ikut terhapus permanen.`,
+                                `Delete session "${String(s.title)}"? Its chat history, memory, schedules, and session workspace will be permanently removed.`,
                               )
                             )
                               return;
@@ -2493,7 +2382,7 @@ export default function Dashboard() {
                                 setSession("");
                                 setStream("");
                               }
-                            }, "Sesi dihapus");
+                            }, "Session deleted");
                           }}
                         >
                           <Trash2 size={13} />
@@ -2506,28 +2395,33 @@ export default function Dashboard() {
               )}
               {tab === "files" && (
                 <section className="panel generic">
-                  <div className="toolbar">
+                  <div className="toolbar files-toolbar">
+                    <label className="field-label">Session
                     <select
-                      aria-label="Session untuk file"
+                      aria-label="Session for workspace files"
                       value={session}
                       onChange={(e) => {
                         setSession(e.target.value);
                         setFilePath(".");
                       }}
                     >
-                      <option value="">Pilih session</option>
+                      <option value="">Select a session</option>
                       {sessions.map((s) => (
                         <option key={String(s.id)} value={String(s.id)}>
                           {String(s.title)}
                         </option>
                       ))}
                     </select>
+                    </label>
+                    <label className="field-label">Workspace path
                     <input
-                      aria-label="Path workspace"
+                      aria-label="Workspace path"
                       value={filePath}
                       onChange={(e) => setFilePath(e.target.value)}
                       placeholder="."
                     />
+                    </label>
+                    <div className="files-actions">
                     <button
                       className="btn"
                       disabled={!session}
@@ -2535,11 +2429,11 @@ export default function Dashboard() {
                         void loadFiles().catch((e) => setError(String(e)))
                       }
                     >
-                      <RefreshCw size={12} /> Muat
+                      <RefreshCw size={12} /> Load
                     </button>
-                    <label className="btn cursor-pointer">
-                      <ArrowDownToLine size={12} /> Unggah
+                    <button type="button" className="btn" disabled={!session} onClick={() => fileUploadRef.current?.click()}><ArrowDownToLine size={12} /> Upload</button>
                       <input
+                        ref={fileUploadRef}
                         type="file"
                         className="hidden"
                         onChange={(e) => {
@@ -2559,18 +2453,18 @@ export default function Dashboard() {
                             const d = (await r.json().catch(() => ({}))) as Row;
                             if (!r.ok)
                               throw new Error(
-                                String(d.error ?? "Upload gagal"),
+                                String(d.error ?? "Upload failed"),
                               );
                             await loadFiles();
-                          }, "File terunggah");
+                          }, "File uploaded");
                           e.target.value = "";
                         }}
                       />
-                    </label>
+                    </div>
                   </div>
                   {!session ? (
                     <div className="empty">
-                      Pilih session untuk melihat workspace-nya.
+                      Select a session to browse its workspace.
                     </div>
                   ) : (
                     <>
@@ -2594,7 +2488,7 @@ export default function Dashboard() {
                               );
                             }}
                           >
-                            Buka
+                            Open
                           </button>
                         </div>
                       ))}
@@ -2602,11 +2496,11 @@ export default function Dashboard() {
                       {editing && (
                         <>
                           <p className="muted text-xs mt-4">
-                            Mengedit <b>{editing}</b>
+                            Editing <b>{editing}</b>
                           </p>
                           <textarea
                             className="font-mono !min-h-72"
-                            aria-label="Isi file"
+                            aria-label="File contents"
                             value={fileContent}
                             onChange={(e) => setFileContent(e.target.value)}
                           />
@@ -2631,12 +2525,12 @@ export default function Dashboard() {
                                     body: fd,
                                   },
                                 );
-                                if (!r.ok) throw new Error("Simpan gagal");
+                                if (!r.ok) throw new Error("Unable to save file");
                                 await loadFiles();
-                              }, "File tersimpan");
+                              }, "File saved");
                             }}
                           >
-                            Simpan file
+                            Save file
                           </button>
                         </>
                       )}
@@ -2651,11 +2545,11 @@ export default function Dashboard() {
                       className="btn primary"
                       onClick={() =>
                         setMarkdown(
-                          "---\nname: skill-baru\ndescription: Instruksi untuk task khusus\ntriggers: [build]\ntools: [bash, write_file]\n---\n\n# Instruksi\n\nBangun hasil nyata dan verifikasi dengan test.",
+                          "---\nname: new-skill\ndescription: Instructions for a specialized task\ntriggers: [build]\ntools: [bash, write_file]\n---\n\n# Instructions\n\nDeliver a working result and verify it with appropriate tests.",
                         )
                       }
                     >
-                      <Plus size={12} /> Skill baru
+                      <Plus size={12} /> New skill
                     </button>
                   </div>
                   {items.map((s) => (
@@ -2678,7 +2572,7 @@ export default function Dashboard() {
                     <>
                       <textarea
                         className="font-mono !min-h-72"
-                        aria-label="Editor skill Markdown"
+                        aria-label="Markdown skill editor"
                         value={markdown}
                         onChange={(e) => setMarkdown(e.target.value)}
                       />
@@ -2688,7 +2582,7 @@ export default function Dashboard() {
                           void action(() => api("skills", { markdown }))
                         }
                       >
-                        Validasi & simpan
+                        Validate & save
                       </button>
                     </>
                   )}
@@ -2697,14 +2591,14 @@ export default function Dashboard() {
               {tab === "memory" && (
                 <section className="panel generic">
                   <div className="toolbar">
-                    <button className="btn" onClick={() => void api("memory/export").then((r) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.download = "pansa-memory.json"; a.click(); })}>Ekspor</button>
-                    <label className="btn">Impor<input type="file" accept="application/json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void file.text().then((text) => action(() => api("memory/import", JSON.parse(text)), "Memori diimpor")); }} /></label>
+                    <button className="btn" onClick={() => void api("memory/export").then((r) => { const a = document.createElement("a"); const url = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.href = url; a.download = "pansa-memory.json"; a.click(); URL.revokeObjectURL(url); })}><Download size={13} /> Export all</button>
+                    <button className="btn" onClick={() => memoryImportRef.current?.click()}><ArrowDownToLine size={13} /> Import</button><input ref={memoryImportRef} type="file" accept="application/json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void file.text().then((text) => action(() => api("memory/import", JSON.parse(text)), "Memory imported")); e.target.value = ""; }} />
                   </div>
-                  <details className="list-card"><summary>USER.md · Profil pengguna</summary><textarea aria-label="Profil pengguna" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profil disimpan")}>Simpan profil</button></details>
+                  <details className="list-card document-editor"><summary>USER.md · User profile</summary><textarea aria-label="User profile" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profile saved")}>Save profile</button></details>
                   <div className="toolbar">
                     <input
-                      aria-label="Cari memori"
-                      placeholder="Cari memori dengan FTS5..."
+                      aria-label="Search memory"
+                      placeholder="Search your memory…"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
@@ -2722,27 +2616,28 @@ export default function Dashboard() {
                         URL.revokeObjectURL(a.href);
                       }}
                     >
-                      <ArrowDownToLine size={12} /> Ekspor
+                      <ArrowDownToLine size={12} /> Export results
                     </button>
                   </div>
                   {items.map((m) => (
                     <div className="list-card" key={String(m.id)}>
-                      {memoryEdit[String(m.id)] ? <div className="flex-1"><input aria-label="Kunci memori" value={memoryEdit[String(m.id)]!.key} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, key: e.target.value } })} /><textarea aria-label="Isi memori" value={memoryEdit[String(m.id)]!.content} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, content: e.target.value } })} /><button className="btn" onClick={() => void action(async () => { await api(`memory/${m.id}`, memoryEdit[String(m.id)], "PUT"); setMemoryEdit({ ...memoryEdit, [String(m.id)]: undefined as never }); }, "Memori diperbarui")}>Simpan perubahan</button></div> : <div>
+                      {memoryEdit[String(m.id)] ? <div className="memory-edit-form"><label>Title<input aria-label="Memory title" value={memoryEdit[String(m.id)]!.key} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, key: e.target.value } })} /></label><label>Memory<textarea aria-label="Memory contents" value={memoryEdit[String(m.id)]!.content} onChange={(e) => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { ...memoryEdit[String(m.id)]!, content: e.target.value } })} /></label><div><button className="btn primary" disabled={busy} onClick={() => void action(async () => { await api(`memory/${m.id}`, memoryEdit[String(m.id)], "PUT"); setMemoryEdit({ ...memoryEdit, [String(m.id)]: undefined as never }); }, "Memory updated")}>Save changes</button><button className="btn" disabled={busy} onClick={() => setMemoryEdit({ ...memoryEdit, [String(m.id)]: undefined as never })}>Cancel</button></div></div> : <div>
                         <span className="badge">{String(m.kind)}</span>
                         <h3 className="mt-3">{String(m.key)}</h3>
                         <p className="text-xs muted mt-2 whitespace-pre-wrap">
                           {String(m.content)}
                         </p>
                       </div>}
-                      <button className="btn" aria-label="Edit memori" onClick={() => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { key: String(m.key), content: String(m.content) } })}>Edit</button>
+                      {!memoryEdit[String(m.id)] && <button className="btn" aria-label="Edit memory" onClick={() => setMemoryEdit({ ...memoryEdit, [String(m.id)]: { key: String(m.key), content: String(m.content) } })}>Edit</button>}
                       <button
                         className="btn danger"
-                        aria-label="Hapus memori"
+                        aria-label="Delete memory"
+                        disabled={busy || Boolean(memoryEdit[String(m.id)])}
                         onClick={() =>
                           void action(async () => {
                             await api(`memory/${m.id}`, undefined, "DELETE");
                             setItems(items.filter((i) => i.id !== m.id));
-                          }, "Memori dihapus")
+                          }, "Memory deleted")
                         }
                       >
                         <Trash2 size={13} />
@@ -2751,10 +2646,10 @@ export default function Dashboard() {
                   ))}
                   {!items.length && (
                     <div className="empty">
-                      Memori akan terisi saat agent menyelesaikan task.
+                      Memories appear as your assistant learns what matters to you.
                     </div>
                   )}
-                  <details className="list-card"><summary>MEMORY.md · Memori terkurasi</summary><textarea aria-label="Memori terkurasi" value={profileDocs.memory} onChange={(e) => setProfileDocs({ ...profileDocs, memory: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/memory", { content: profileDocs.memory }, "PUT"), "Memori terkurasi disimpan")}>Simpan memori</button></details>
+                  <details className="list-card document-editor"><summary>MEMORY.md · Curated memory</summary><textarea aria-label="Curated memory" value={profileDocs.memory} onChange={(e) => setProfileDocs({ ...profileDocs, memory: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/memory", { content: profileDocs.memory }, "PUT"), "Curated memory saved")}>Save memory</button></details>
                 </section>
               )}
               {tab === "tools" && (
@@ -2790,7 +2685,7 @@ export default function Dashboard() {
                                     ),
                                   );
                                 },
-                                tool.enabled ? "Tool dimatikan" : "Tool aktif",
+                                tool.enabled ? "Tool disabled" : "Tool enabled",
                               )
                             }
                           >
@@ -2800,17 +2695,17 @@ export default function Dashboard() {
                       </div>
                     ))
                   ) : (
-                    <div className="empty">Katalog tool dimuat dari core.</div>
+                    <div className="empty">The tool catalog is loaded from core.</div>
                   )}
                 </section>
               )}
               {tab === "settings" && (
                 <section className="panel generic">
-                  <h2 className="mb-4">Preferensi ruang kendali</h2>
+                  <h2 className="mb-4">Workspace preferences</h2>
                   <div className="list-card">
-                    <span>Bahasa</span>
+                    <span>Navigation language</span>
                     <select
-                      aria-label="Bahasa"
+                      aria-label="Navigation language"
                       value={lang}
                       onChange={(e) => setLang(e.target.value as "id" | "en")}
                     >
@@ -2818,14 +2713,14 @@ export default function Dashboard() {
                       <option value="en">English</option>
                     </select>
                   </div>
-                  <div className="list-card"><span>Direktori proyek</span><code>{String(settingsInfo.workspace_dir ?? "—")}</code></div>
-                  <div className="list-card"><span>Persona SOUL.md</span><textarea aria-label="Persona agent" value={profileDocs.soul} onChange={(e) => setProfileDocs({ ...profileDocs, soul: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/soul", { content: profileDocs.soul }, "PUT"), "Persona disimpan")}>Simpan persona</button></div>
-                  <div className="list-card"><span>Profil USER.md</span><textarea aria-label="Profil pengguna" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profil disimpan")}>Simpan profil</button></div>
+                  <div className="list-card"><span>Project directory</span><code>{String(settingsInfo.workspace_dir ?? "—")}</code></div>
+                  <div className="list-card document-editor"><span>SOUL.md · Assistant persona</span><textarea aria-label="Assistant persona" value={profileDocs.soul} onChange={(e) => setProfileDocs({ ...profileDocs, soul: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/soul", { content: profileDocs.soul }, "PUT"), "Persona saved")}>Save persona</button></div>
+                  <div className="list-card document-editor"><span>USER.md · User profile</span><textarea aria-label="User profile" value={profileDocs.user} onChange={(e) => setProfileDocs({ ...profileDocs, user: e.target.value })} /><button className="btn" onClick={() => void action(() => api("profile/user", { content: profileDocs.user }, "PUT"), "Profile saved")}>Save profile</button></div>
                   <div className="list-card tz-card">
-                    <span>Zona waktu</span>
+                    <span>Time zone</span>
                     <div className="tz-control">
                       <select
-                        aria-label="Zona waktu"
+                        aria-label="Time zone"
                         value={zone}
                         onChange={(e) => {
                           const next = e.target.value;
@@ -2854,7 +2749,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <div className="list-card">
-                    <span>Mode eksekusi</span>
+                    <span>Execution mode</span>
                     <span className="badge">
                       {String(settingsInfo.sandbox ?? "docker")} · network{" "}
                       {settingsInfo.sandbox_network ? "on" : "off"}
@@ -2870,14 +2765,14 @@ export default function Dashboard() {
                             max_steps: Number(settings.max_steps) || undefined,
                             timezone: settings.timezone || DEFAULT_TIMEZONE,
                           }),
-                        "Settings disimpan",
+                        "Settings saved",
                       );
                     }}
                   >
                     <div className="list-card">
-                      <span>Maks step per task</span>
+                      <span>Maximum steps per task</span>
                       <input
-                        aria-label="Maks step"
+                        aria-label="Maximum steps"
                         type="number"
                         min={1}
                         max={100}
@@ -2891,28 +2786,26 @@ export default function Dashboard() {
                       />
                     </div>
                     <button className="btn primary" disabled={busy}>
-                      Simpan settings
+                      Save settings
                     </button>
                   </form>
                   <h2 className="mt-6 mb-4">Backup</h2>
                   <div className="list-card">
-                    <span>Snapshot database</span>
+                    <span>Database snapshot</span>
                     <button
                       className="btn"
                       onClick={() =>
                         void action(
                           () => api("backup", {}),
-                          "Backup dibuat di folder data",
+                          "Backup created in the data directory",
                         )
                       }
                     >
-                      <ArrowDownToLine size={12} /> Backup sekarang
+                      <ArrowDownToLine size={12} /> Back up now
                     </button>
                   </div>
                   <p className="muted text-xs leading-6">
-                    Token admin, Telegram, master key, dan resource sandbox
-                    dikonfigurasi lewat environment VPS. Gunakan CLI pansaos
-                    untuk backup dan restore.
+                    Configure the admin token, Telegram, encryption key, and execution resources through the server environment. Use the Pansa CLI for backup and restore.
                   </p>
                 </section>
               )}
@@ -2924,40 +2817,40 @@ export default function Dashboard() {
                 <span className="footer-mark">
                   <Zap size={12} />
                 </span>
-                <span>PANSAOS <span className="light">/</span> ASISTEN PRIBADI</span>
+                <span>PANSAOS <span className="light">/</span> PERSONAL ASSISTANT</span>
               </div>
               <p className="footer-tagline">
-                Satu dashboard untuk percakapan, tugas, dan memori pribadi.
+                One workspace for your conversations, tasks, and personal memory.
               </p>
             </div>
-            <nav className="footer-links" aria-label="Tautan footer">
+            <nav className="footer-links" aria-label="Footer links">
               <a
                 href="https://github.com/jhodypedia/PansaOS"
                 target="_blank"
                 rel="noreferrer"
               >
-                <Github size={12} /> Repositori
+                <Github size={12} /> Repository
               </a>
               <a
                 href="https://github.com/jhodypedia/PansaOS/issues"
                 target="_blank"
                 rel="noreferrer"
               >
-                <Shield size={12} /> Laporkan isu
+                <Shield size={12} /> Report an issue
               </a>
               <a
                 href="https://github.com/jhodypedia/PansaOS#readme"
                 target="_blank"
                 rel="noreferrer"
               >
-                <BookOpen size={12} /> Dokumentasi
+                <BookOpen size={12} /> Documentation
               </a>
               <a
                 href="https://github.com/jhodypedia/PansaOS/releases"
                 target="_blank"
                 rel="noreferrer"
               >
-                <FileText size={12} /> Rilis
+                <FileText size={12} /> Releases
               </a>
             </nav>
             <div className="footer-meta">
@@ -2975,13 +2868,13 @@ export default function Dashboard() {
           </footer>
         </div>
       </main>
-      <nav className="mobile-dock" aria-label="Navigasi cepat">
+      <nav className="mobile-dock" aria-label="Quick navigation">
         {(["overview", "chat", "live", "memory"] as const).map(key => {
           const Icon = tabs.find(([name]) => name === key)![1];
-          const label = { overview: "Beranda", chat: "Chat", live: "Aktivitas", memory: "Memori" }[key];
+          const label = { overview: "Home", chat: "Chat", live: "Activity", memory: "Memory" }[key];
           return <button key={key} className={tab === key ? "on" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => { setTab(key); setNavOpen(false); }}><Icon size={19} /><span>{label}</span>{tab === key && <span className="dock-indicator" />}</button>;
         })}
-        <button aria-label="Semua menu" onClick={() => setNavOpen(true)}><Menu size={19} /><span>Menu</span></button>
+        <button aria-label="All sections" onClick={() => setNavOpen(true)}><Menu size={19} /><span>Menu</span></button>
       </nav>
       <AnimatePresence>
         {notice && (

@@ -12,7 +12,7 @@ export const ServerSchema = z.object({ name: z.string().regex(/^[a-z][a-z0-9_-]{
   if (server.name !== "chrome-devtools") return;
   const required = ["-y", "chrome-devtools-mcp@latest", "--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux", "--executablePath=/usr/local/bin/chrome-for-testing", "--filesystemRoot=/workspace", "--redactNetworkHeaders", "--fileNavigations=false", "--chromeArg=--no-sandbox", "--chromeArg=--disable-dev-shm-usage", "--chromeArg=--download-default-directory=/workspace", "--chromeArg=--disable-features=DownloadBubble"];
   if (server.transport !== "stdio" || server.command !== "npx" || required.some(arg => !server.args.includes(arg)))
-    ctx.addIssue({ code: "custom", message: "Konfigurasi chrome-devtools wajib memakai binary sandbox yang terisolasi dan terbatas ke workspace" });
+    ctx.addIssue({ code: "custom", message: "chrome-devtools must use an isolated browser binary restricted to the workspace" });
 });
 type Server = z.infer<typeof ServerSchema>;
 export class MCP {
@@ -51,13 +51,13 @@ export class MCP {
       await this.clients.get(server.name)?.close().catch(() => {});
       const client = new Client({ name: "PansaOS", version: "1.0.0" });
       if (server.transport === "stdio") {
-        if (!server.command) throw new Error("Perintah stdio wajib diisi");
-        if (server.args.some(arg => arg.includes("/home/") || arg.includes("docker.sock") || arg.includes(".."))) throw new Error("Argumen MCP harus dibatasi ke /workspace");
+        if (!server.command) throw new Error("A stdio command is required");
+        if (server.args.some(arg => arg.includes("/home/") || arg.includes("docker.sock") || arg.includes(".."))) throw new Error("MCP arguments must be restricted to /workspace");
         await this.tools.sandbox.root(server.session);
-         if (config.EXEC_MODE === "host") throw new Error("MCP stdio memerlukan mode docker; gunakan MCP HTTP/SSE pada mode host");
+         if (config.EXEC_MODE === "host") throw new Error("MCP stdio requires Docker mode; use HTTP/SSE MCP in host mode");
          await client.connect(new StdioClientTransport({ command: "docker", args: ["run", "--rm", "-i", "--label", `pansa.session=${server.session}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--memory", "2g", "--cpus", "2", "--pids-limit", "512", "--network", "bridge", "-v", `${path.join(config.HOST_WORKSPACE_DIR ?? config.workspace, server.session)}:/workspace`, "-w", "/workspace", "-e", "HOME=/workspace/.home", "--tmpfs", "/tmp:rw,nosuid,size=512m", "--shm-size", "512m", config.SANDBOX_IMAGE, server.command, ...server.args], stderr: "pipe" }));
       } else {
-        if (!server.url) throw new Error("URL MCP wajib diisi");
+        if (!server.url) throw new Error("An MCP URL is required");
         await checkURL(server.url, false);
         const url = new URL(server.url);
         const guardedFetch = async (input: string | URL | Request, init?: RequestInit) => safeFetch(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, { ...init, redirect: "manual", signal: AbortSignal.timeout(20000) }, false);
@@ -67,7 +67,7 @@ export class MCP {
       for (const tool of remote.tools) {
         const name = `${server.name}__${tool.name}`;
         this.tools.add({ name, description: tool.description ?? name, schema: z.record(z.unknown()), parameters: tool.inputSchema as Record<string, unknown>, risky: true, run: async (args, ctx) => {
-          if (ctx.session !== server.session) throw new Error("MCP dibatasi ke workspace session konfigurasi");
+          if (ctx.session !== server.session) throw new Error("MCP access is restricted to its configured session");
           return client.callTool({ name: tool.name, arguments: args });
         } });
       }
@@ -76,7 +76,7 @@ export class MCP {
     } catch (error) {
       this.clients.delete(server.name);
       for (const key of this.tools.registry.keys()) if (key.startsWith(`${server.name}__`)) this.tools.registry.delete(key);
-      this.status.set(server.name, { connected: false, count: 0, error: error instanceof Error ? redact(error.message, [...this.tools.store.secrets, ...Object.values(server.headers)]).replace(/https?:\/\/\S+/g, "[URL]").replace(/<[^>]*>/g, "").slice(0, 300) : "Koneksi MCP gagal" });
+      this.status.set(server.name, { connected: false, count: 0, error: error instanceof Error ? redact(error.message, [...this.tools.store.secrets, ...Object.values(server.headers)]).replace(/https?:\/\/\S+/g, "[URL]").replace(/<[^>]*>/g, "").slice(0, 300) : "MCP connection failed" });
     }
   }
 }

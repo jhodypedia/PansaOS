@@ -1,4 +1,4 @@
 ---
-description: Periksa provider, sandbox, disk, dan DNS
+description: Check providers, execution, storage, and connectivity
 ---
 Periksa kesehatan sistem.
