@@ -768,6 +768,7 @@ export default function Dashboard() {
   const buffer = useRef("");
   const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
   const pageRef = useRef(1);
   const sizeRef = useRef(50);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1195,6 +1196,33 @@ export default function Dashboard() {
     const row = sessions.find((s) => String(s.id) === session);
     return Boolean(row?.running);
   }, [events, session, sessions, data, stopped]);
+  const conversation = useMemo(() => timeline.filter(item => {
+    const payload = data(item.e);
+    return item.type === "message" && ["user", "assistant"].includes(String(payload.role)) && String(payload.content ?? "").trim();
+  }), [timeline, data]);
+  const conversationVersion = conversation.map(item => item.key).join(",");
+  const scrollVersion = view === "chat" ? conversationVersion : timeline.map(item => `${item.key}:${data(item.e).status ?? ""}`).join(",");
+  const sessionApprovals = approvals.filter(item => item.session_id === session);
+  const sessionQuestions = sessionState.questions as Row[] ?? [];
+  const lastTask = events.find(event => event.session_id === session && event.type === "task");
+  const taskFailure = !running && lastTask && data(lastTask).status === "error" ? String(data(lastTask).error ?? "Permintaan belum berhasil diselesaikan. Silakan coba lagi.") : "";
+  const liveActivity = useMemo(() => {
+    if (sessionApprovals.length) return { label: "Menunggu persetujuan Anda", detail: "Tinjau tindakan di bawah untuk melanjutkan.", waiting: true };
+    if (sessionQuestions.length) return { label: "Menunggu jawaban Anda", detail: "Pilih opsi atau tulis jawaban pada kartu pertanyaan.", waiting: true };
+    const latest = events.filter(event => event.session_id === session);
+    const task = latest.find(event => event.type === "task");
+    const latestTool = latest.find(event => event.type === "tool" && Number(event.id) > Number(task?.id ?? 0));
+    if (latestTool && data(latestTool).status === "running") {
+      const payload = data(latestTool);
+      const name = String(payload.name ?? payload.tool ?? "tool");
+      const labels: Record<string, string> = { web_fetch: "Membaca halaman web", http_request: "Mengambil data web", web_search: "Mencari di web", bash: "Menjalankan perintah", run_python: "Menganalisis data", run_node: "Menjalankan kode", read_file: "Membaca berkas", write_file: "Menulis berkas", edit_file: "Memperbarui berkas" };
+      let detail = name.replace(/_/g, " ");
+      const url = (payload.args as Row | undefined)?.url;
+      if (url) { try { detail = new URL(String(url)).hostname; } catch {} }
+      return { label: labels[name] ?? "Menjalankan langkah", detail, waiting: false };
+    }
+    return { label: stream ? "Menyusun jawaban" : "Sedang berpikir", detail: "Pansa sedang mengerjakan permintaan Anda.", waiting: false };
+  }, [events, session, data, stream, sessionApprovals.length, sessionQuestions.length]);
   const transcript = useMemo(
     () =>
       timeline
@@ -1217,17 +1245,20 @@ export default function Dashboard() {
   );
   useEffect(() => {
     const el = historyRef.current;
-    if (!el || !stick) return;
+    if (!el || !followLatest.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [timeline, stream, view, stick]);
+  }, [scrollVersion, stream, view, session, tab, running, sessionApprovals.length, sessionQuestions.length]);
   const onScroll = () => {
     const el = historyRef.current;
     if (!el) return;
-    setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 120);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    followLatest.current = atBottom;
+    setStick(atBottom);
   };
   const jump = () => {
     const el = historyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
+    followLatest.current = true;
     setStick(true);
   };
   const copy = async (text: string, label: string) => {
@@ -2023,9 +2054,11 @@ export default function Dashboard() {
                         value={session}
                         zone={zone}
                       onChange={(id) => {
-                        setSession(id);
-                        setStream("");
-                        setStick(true);
+                         setSession(id);
+                         setSessionState({});
+                         setStream("");
+                         followLatest.current = true;
+                         setStick(true);
                       }}
                     />
                     <div className="seg" role="tablist" aria-label="Mode tampilan">
@@ -2103,12 +2136,11 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="chat-shell">
-                    {session && <div className="session-work-panel">
+                    {session && view === "console" && <div className="session-work-panel">
                       <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} token · {(sessionState.usage as Row)?.cost == null ? "Biaya tidak diketahui" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
                       {!!((sessionState.usage as Row)?.context) && <label>Konteks ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimasi)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
                       {(sessionState.todos as Row[] ?? []).map((item, index) => <div key={index}>{item.status === "completed" ? "✓" : item.status === "in_progress" ? "◉" : "○"} {String(item.content)} · {String(item.status)}</div>)}
                       {(sessionState.subagents as Row[] ?? []).map(task => <div key={String(task.id)}>Subagent {String(task.type)} · {String(task.status)} · sejak {fmtTime(task.since, zone)}</div>)}
-                      {(sessionState.questions as Row[] ?? []).map(q => <QuestionCard key={String(q.id)} question={q} onAnswer={answer => api(`questions/${q.id}`, { answer })} />)}
                       {!!(sessionState.checkpoints as Row[] ?? []).length && <details><summary>Checkpoint ({(sessionState.checkpoints as Row[]).length})</summary>{(sessionState.checkpoints as Row[]).map(cp => <div key={String(cp.id)}>{String(cp.name)} · {String(cp.time)} · {(cp.files as string[]).length} file</div>)}</details>}
                       <details><summary>Command tersedia</summary>{commandList.map(command => <div key={command.name}>/{command.name} — {command.description}</div>)}</details>
                       <button className="btn" onClick={() => setShowArchive(!showArchive)}>{showArchive ? "Tutup arsip" : "Buka arsip riwayat"}</button>
@@ -2132,7 +2164,9 @@ export default function Dashboard() {
                       className={`chat-history ${view === "console" ? "console" : ""}`}
                       ref={historyRef}
                       onScroll={onScroll}
-                      aria-live="polite"
+                      role="region"
+                      aria-label={view === "chat" ? "Riwayat percakapan" : "Log eksekusi"}
+                      tabIndex={0}
                     >
                       {!session && (
                         <div className="empty">
@@ -2143,14 +2177,14 @@ export default function Dashboard() {
                           </p>
                         </div>
                       )}
-                      {session && !timeline.length && !stream && (
+                      {session && !conversation.length && !running && view === "chat" && (
                         <div className="empty">
                           <MessageSquare size={26} />
                           <p>Belum ada percakapan di sesi ini.</p>
                         </div>
                       )}
                       {view === "chat"
-                        ? timeline.map((i) => {
+                        ? conversation.map((i) => {
                             const d = data(i.e);
                             if (i.type === "message") {
                               const text = String(d.content ?? "").trim();
@@ -2161,64 +2195,12 @@ export default function Dashboard() {
                                   className={`bubble ${String(d.role ?? "")}`}
                                 >
                                   <span className="bubble-role">
-                                    {String(d.role ?? "agent")}
+                                    {d.role === "user" ? "Anda" : "Pansa"}
                                   </span>
                                   <Rich text={text} />
                                 </div>
                               );
                             }
-                            if (i.type === "tool")
-                              return (
-                                <ActionBlock
-                                  key={i.key}
-                                  e={i.e}
-                                  onOpen={() => setView("console")}
-                                />
-                              );
-                            if (i.type === "progress")
-                              return (
-                                <div className="notice-row progress" key={i.key}>
-                                  <Loader2 size={11} className="spin" />
-                                  <span className="progress-text">
-                                    {String(d.text ?? "").slice(0, 200)}
-                                  </span>
-                                  {d.step !== undefined && (
-                                    <span className="progress-step">
-                                      {String(d.step)}/{String(d.of ?? "")}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            if (i.type === "switch")
-                              return (
-                                <div className="notice-row" key={i.key}>
-                                  <RefreshCw size={11} /> Provider berpindah:{" "}
-                                  {String(
-                                    d.reason ??
-                                      `${String(d.fromName ?? d.from ?? "")} → ${String(d.toName ?? d.to ?? "")}`,
-                                  )}
-                                </div>
-                              );
-                            if (i.type === "error")
-                              return (
-                                <div className="notice-row bad" key={i.key}>
-                                  <Shield size={11} />{" "}
-                                  {String(d.error ?? "Terjadi kesalahan")}
-                                </div>
-                              );
-                            if (i.type === "task")
-                              return (
-                                <div
-                                  className={`notice-row task ${String(d.status ?? "")}`}
-                                  key={i.key}
-                                >
-                                  <Activity size={11} /> Task{" "}
-                                  {String(d.status ?? "")}
-                                  {d.cost !== undefined &&
-                                    ` · $${Number(d.cost).toFixed(4)}`}
-                                  {d.error ? ` · ${String(d.error)}` : ""}
-                                </div>
-                              );
                             return null;
                           })
                         : timeline.map((i) => {
@@ -2259,12 +2241,25 @@ export default function Dashboard() {
                               </div>
                             );
                           })}
-                      {stream && (
+                      {view === "console" && stream && (
                         <div className="bubble streaming">
                           <span className="bubble-role">streaming</span>
                           <pre className="stream-text">{stream}</pre>
                         </div>
                       )}
+                      {view === "chat" && running && <div className={`chat-activity${liveActivity.waiting ? " waiting" : ""}`} role="status" aria-live="polite">
+                        <span className="activity-orbit" aria-hidden="true"><span /><span /><span /></span>
+                        <div><strong key={liveActivity.label}>{liveActivity.label}<span className="activity-ellipsis" aria-hidden="true">…</span></strong><p>{liveActivity.detail}</p></div>
+                        <button type="button" onClick={() => setView("console")} aria-label="Lihat detail di Console">Detail <ArrowUpRight size={12} /></button>
+                      </div>}
+                      {view === "chat" && taskFailure && <div className="notice-row bad" role="alert"><Shield size={15} /><span>{taskFailure}</span></div>}
+                      {sessionQuestions.map(question => <QuestionCard key={String(question.id)} question={question} onAnswer={answer => api(`questions/${question.id}`, { answer })} />)}
+                      {sessionApprovals.map(approval => <div key={String(approval.id)} className="chat-approval decision-card">
+                        <div className="decision-eyebrow"><Shield size={14} /> PERSETUJUAN ANDA</div>
+                        <p>Pansa perlu izin untuk menjalankan <strong>{String(approval.tool).replace(/_/g, " ")}</strong>.</p>
+                        <details><summary>Lihat tindakan</summary><pre>{String(approval.args)}</pre></details>
+                        <div className="approval-actions"><button className="btn primary" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: true }), "Tindakan disetujui")}><Check size={14} /> Setujui</button><button className="btn" disabled={busy} onClick={() => void action(() => api(`approvals/${approval.id}`, { approved: false }), "Tindakan ditolak")}><X size={14} /> Tolak</button></div>
+                      </div>)}
                     </div>
                   </div>
                   {!stick && session && (
@@ -2278,34 +2273,6 @@ export default function Dashboard() {
                       </button>
                     </div>
                   )}
-                  {approvals
-                    .filter((a) => a.session_id === session)
-                    .map((a) => (
-                      <div key={String(a.id)} className="bubble approval mb-4">
-                        <p>Approval: {String(a.tool)}</p>
-                        <pre className="text-xs my-3">{String(a.args)}</pre>
-                        <button
-                          className="btn primary mr-2"
-                          onClick={() =>
-                            void action(() =>
-                              api(`approvals/${a.id}`, { approved: true }),
-                            )
-                          }
-                        >
-                          <Check size={13} /> Setuju
-                        </button>
-                        <button
-                          className="btn danger"
-                          onClick={() =>
-                            void action(() =>
-                              api(`approvals/${a.id}`, { approved: false }),
-                            )
-                          }
-                        >
-                          <X size={13} /> Tolak
-                        </button>
-                      </div>
-                    ))}
                   <form
                     className="console-bar"
                     onSubmit={(e) => {
@@ -2328,7 +2295,7 @@ export default function Dashboard() {
                     {prompt.startsWith("/") && !prompt.includes(" ") && <div className="command-autocomplete">{commandList.filter(command => `/${command.name}`.startsWith(prompt)).map(command => <button type="button" className="btn" key={command.name} onClick={() => setPrompt(`/${command.name} `)}>/{command.name} · {command.description}</button>)}</div>}
                     <button
                       className="btn primary h-11"
-                      disabled={busy || !prompt.trim()}
+                      disabled={busy || running || !prompt.trim()}
                     >
                       <Send size={14} />
                       {t.send}
