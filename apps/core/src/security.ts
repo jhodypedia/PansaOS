@@ -33,6 +33,12 @@ export const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export const equal = (a: string, b: string) =>
   timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
 export const mask = (s: string) => (s ? `sk-…${s.slice(-3)}` : "tanpa key");
+export function isWithinAllowlist(target: string, roots: string[]): boolean {
+  return roots.some((root) => {
+    const relative = path.relative(root, target);
+    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+  });
+}
 export function redact(value: unknown, secrets: string[] = []): string {
   let text = typeof value === "string" ? value : JSON.stringify(value);
   for (const s of secrets)

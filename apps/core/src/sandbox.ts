@@ -9,12 +9,13 @@ export function execute(
   args: string[],
   signal: AbortSignal,
   cwd?: string,
+  home?: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
     const child = spawn(command, args, {
       cwd,
-      env: { PATH: process.env.PATH, HOME: config.EXEC_MODE === "host" ? (process.env.HOME ?? os.homedir()) : "/tmp", LANG: "C.UTF-8" },
+      env: { PATH: process.env.PATH, HOME: home ?? (config.EXEC_MODE === "host" ? (process.env.HOME ?? os.homedir()) : "/tmp"), LANG: "C.UTF-8" },
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -71,10 +72,12 @@ export class Sandbox {
       const saved: { cwd?: string } = await fs.readFile(stateFile, "utf8").then((text) => JSON.parse(text) as { cwd?: string }).catch(() => ({} as { cwd?: string }));
       const root = await this.root(session);
       const cwd = saved.cwd && (saved.cwd === root || saved.cwd.startsWith(root + path.sep)) ? saved.cwd : root;
-      const result = await execute("bash", ["-lc", `cd ${JSON.stringify(cwd)}; { ${command}; }; status=$?; pwd > ${JSON.stringify(path.join(home, ".cwd.tmp"))}; exit $status`], AbortSignal.any([signal, AbortSignal.timeout(timeout)]), root);
+      const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+      const result = await execute("bash", ["-c", `cd ${quote(cwd)} || exit; { ${command}; }; status=$?; pwd > ${quote(path.join(home, ".cwd.tmp"))}; exit $status`], AbortSignal.any([signal, AbortSignal.timeout(timeout)]), root, home);
       const nextCwd = await fs.readFile(path.join(home, ".cwd.tmp"), "utf8").catch(() => root);
       await fs.rm(path.join(home, ".cwd.tmp"), { force: true });
-      if (nextCwd.startsWith(root)) await fs.writeFile(stateFile, JSON.stringify({ cwd: nextCwd.trim() }));
+      const resolvedCwd = nextCwd.trim();
+      if (resolvedCwd === root || resolvedCwd.startsWith(root + path.sep)) await fs.writeFile(stateFile, JSON.stringify({ cwd: resolvedCwd }));
       return result;
     }
     const name = `pansa-shell-${session}`;
@@ -86,8 +89,9 @@ export class Sandbox {
       reset = existed || await fs.stat(path.join(home, ".shell-started")).then(() => true).catch(() => false);
       if (existed) await execute("docker", ["rm", "-f", name], combined);
       const hostBase = config.HOST_WORKSPACE_DIR ?? config.workspace;
+      const hostRoot = path.join(hostBase, session);
       const daemon = `mkdir -p /tmp/pansa-shell; mkfifo /tmp/pansa-shell/requests; exec 3<>/tmp/pansa-shell/requests; set -o history; HISTFILE=/home/agent/.bash_history; history -r; while IFS= read -r request <&3; do { source "$request"; } >"$request.out" 2>&1; result=$?; printf '%s\\n%s\\n' "$result" "$PWD" >"$request.status"; history -w; done`;
-       const started = await execute("docker", ["run", "-d", "--name", name, "--label", `pansa.session=${session}`, "--init", "--cpus", "2", "--memory", "2g", "--pids-limit", "512", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,size=1g", "--network", config.SANDBOX_NETWORK === "true" ? "bridge" : "none", "--user", "1000:1000", "-v", `${path.join(hostBase, session)}:/workspace`, "-v", `${path.join(config.state, "sessions", session, "home")}:/home/agent`, "-w", "/workspace", "-e", "HOME=/home/agent", "-e", "PATH=/home/agent/.local/bin:/workspace/.local/bin:/workspace/.tools:/usr/local/bin:/usr/bin:/bin", config.SANDBOX_IMAGE, "bash", "-c", daemon], combined);
+       const started = await execute("docker", ["run", "-d", "--name", name, "--label", `pansa.session=${session}`, "--init", "--cpus", "2", "--memory", "2g", "--pids-limit", "512", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,size=1g", "--network", config.SANDBOX_NETWORK === "true" ? "bridge" : "none", "--user", "1000:1000", "-v", `${hostRoot}:/workspace`, "-v", `${path.join(config.state, "sessions", session, "home")}:/home/agent`, "-w", "/workspace", "-e", "HOME=/home/agent", "-e", "PATH=/home/agent/.local/bin:/workspace/.local/bin:/workspace/.tools:/usr/local/bin:/usr/bin:/bin", config.SANDBOX_IMAGE, "bash", "-c", daemon], combined);
       if (!started.startsWith("exit=0")) throw new Error(started);
       await fs.writeFile(path.join(home, ".shell-started"), new Date().toISOString());
     }
@@ -151,12 +155,9 @@ export class Sandbox {
         AbortSignal.timeout(Math.min(timeout, 300000)),
       ]);
     if (config.EXEC_MODE === "host" || config.ALLOW_UNSANDBOXED === "true")
-      return execute("bash", ["-lc", command], combined, root);
+      return execute("bash", ["-c", command], combined, root, await this.home(session));
     const name = `pansa-${session}-${crypto.randomUUID().slice(0, 8)}`;
-    const hostRoot = path.join(
-      config.HOST_WORKSPACE_DIR ?? config.workspace,
-      session,
-    );
+    const hostRoot = path.join(config.HOST_WORKSPACE_DIR ?? config.workspace, session);
     const cleanup = () => {
       void execute(
         "docker",

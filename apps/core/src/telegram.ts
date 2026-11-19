@@ -1,5 +1,5 @@
-import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
-import type { Update } from "grammy/types";
+import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
+import type { MessageEntity, Update } from "grammy/types";
 import type { FastifyInstance } from "fastify";
 import { hydrateFiles } from "@grammyjs/files";
 import { randomBytes } from "node:crypto";
@@ -15,7 +15,81 @@ import type { Skills } from "./skills.js";
 import type { Tools } from "./tools.js";
 import type { Agent } from "./agent.js";
 import { config } from "./config.js";
+import { telegramMessages } from "./telegram-format.js";
 const help = `/new session baru\n/stop hentikan task\n/status status agent\n/model ID kunci provider\n/providers daftar provider\n/addprovider nama|base_url|api_key|model\n/skills skill aktif\n/memory kata untuk mencari\n/forget kata atau fakta untuk dilupakan\n/tasks task berjalan\n/dashboard link dashboard\n/autoapprove on|off`;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const barText = (frame: number, done: boolean) => {
+  const width = 18;
+  if (done) return "▰".repeat(width);
+  const pulse = 4;
+  const span = width - pulse;
+  const cycle = span * 2;
+  const tick = (frame * 2) % cycle;
+  const start = tick <= span ? tick : cycle - tick;
+  return "▱".repeat(start) + "▰".repeat(pulse) + "▱".repeat(width - start - pulse);
+};
+const clockFrom = (from: number) => {
+  const e = Math.max(0, (Date.now() - from) / 1000);
+  return `${String(Math.floor(e / 60)).padStart(2, "0")}:${String(Math.floor(e % 60)).padStart(2, "0")}`;
+};
+type TelegramPromptMessage = {
+  text?: string;
+  caption?: string;
+  entities?: MessageEntity[];
+  caption_entities?: MessageEntity[];
+  quote?: { text: string; entities?: MessageEntity[] };
+  reply_to_message?: TelegramPromptMessage & {
+    from?: { first_name: string; username?: string };
+  };
+};
+const entityNotes = (text: string, entities: MessageEntity[] = []) =>
+  entities.flatMap((entity) => {
+    const value = text.slice(entity.offset, entity.offset + entity.length);
+    if (!value) return [];
+    switch (entity.type) {
+      case "text_link":
+        return [`- Hyperlink text ${JSON.stringify(value)} targets ${entity.url}`];
+      case "text_mention":
+        return [`- User mention ${JSON.stringify(value)} refers to ${entity.user.username ? `Telegram username ${entity.user.username}` : entity.user.first_name}`];
+      case "blockquote":
+      case "expandable_blockquote":
+        return [`- Telegram ${entity.type === "blockquote" ? "quotation" : "expandable quotation"}: ${JSON.stringify(value)}`];
+      case "bold":
+      case "italic":
+      case "underline":
+      case "strikethrough":
+      case "spoiler":
+      case "code":
+        return [`- Telegram ${entity.type} formatting applies to ${JSON.stringify(value)}`];
+      case "pre":
+        return [`- Telegram code block${entity.language ? ` (${entity.language})` : ""}: ${JSON.stringify(value)}`];
+      default:
+        return [];
+    }
+  }).slice(0, 30);
+const telegramPrompt = (message: TelegramPromptMessage) => {
+  const text = message.text ?? message.caption ?? "";
+  const entities = message.text ? message.entities : message.caption_entities;
+  const sections = [text];
+  const details = entityNotes(text, entities);
+  if (details.length) sections.push(`Telegram text formatting and links:\n${details.join("\n")}`);
+
+  if (message.quote?.text) {
+    const quote = message.quote;
+    const quoteDetails = entityNotes(quote.text, quote.entities);
+    sections.push(`Quoted excerpt from the replied-to message:\n${quote.text}${quoteDetails.length ? `\nFormatting: ${quoteDetails.join("; ")}` : ""}`);
+  }
+  const replied = message.reply_to_message;
+  const repliedText = replied?.text ?? replied?.caption;
+  if (repliedText) {
+    const sender = replied?.from?.username ? `@${replied.from.username}` : replied?.from?.first_name;
+    const replyEntities = replied?.text ? replied.entities : replied?.caption_entities;
+    const replyDetails = entityNotes(repliedText, replyEntities);
+    sections.push(`Message being replied to${sender ? ` (${sender})` : ""}:\n${repliedText}${replyDetails.length ? `\nFormatting and links: ${replyDetails.join("; ")}` : ""}`);
+  }
+  return sections.filter(Boolean).join("\n\n");
+};
 interface Deps {
   app?: FastifyInstance;
   store: Store;
@@ -39,6 +113,58 @@ export async function startTelegram(d: Deps) {
     return ctx.from.id;
   };
   const wizard = new Map<number, string[]>();
+  const formattedEdit = async (ctx: Context, messageId: number, text: string, entities: MessageEntity[]) => {
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, messageId, text, { entities, reply_markup: new InlineKeyboard() });
+    } catch (error) {
+      if (error instanceof GrammyError && error.description.includes("message is not modified")) return;
+      if (error instanceof GrammyError && error.error_code === 400)
+        await ctx.api.editMessageText(ctx.chat!.id, messageId, text, { reply_markup: new InlineKeyboard() });
+      else throw error;
+    }
+  };
+  const typeOut = async (ctx: Context, target: { message_id: number }, full: string) => {
+    const chunks = telegramMessages(full);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
+      if (i === 0) await formattedEdit(ctx, target.message_id, chunk.text, chunk.entities);
+      else await ctx.reply(chunk.text, { entities: chunk.entities });
+    }
+  };
+  const animatedReply = async (ctx: Context, task: () => Promise<string>, label = "MEMPROSES") => {
+    const startedAt = Date.now();
+    const msg = await ctx.reply(`${SPIN[0]} PANSA · ${label}\n${barText(0, false)}  ·  BERJALAN`);
+    let frame = 0,
+      done = false,
+      busy = false;
+    const timer = setInterval(() => {
+      if (done) return;
+      frame++;
+      if (busy) return;
+      busy = true;
+      ctx.api
+        .editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[frame % SPIN.length]} PANSA · ${label}\n${barText(frame, false)}  ·  BERJALAN · ${clockFrom(startedAt)}`)
+        .catch(() => {})
+        .finally(() => (busy = false));
+    }, 1000);
+    timer.unref?.();
+    try {
+      const result = await task();
+      done = true;
+      clearInterval(timer);
+      while (busy) await sleep(30);
+      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[9]} PANSA · SELESAI\n${barText(0, true)} 100%  ·  ${clockFrom(startedAt)}`).catch(() => {});
+      await typeOut(ctx, msg, result);
+      return result;
+    } catch (e) {
+      done = true;
+      clearInterval(timer);
+      while (busy) await sleep(30);
+      const err = e instanceof Error ? e.message : "error";
+      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `⚠️ PANSA · GAGAL\n${"━".repeat(18)}\n${err.slice(0, 3800)}`).catch(() => {});
+      throw e;
+    }
+  };
   const providerName = (id: unknown) =>
     String(
       d.providers
@@ -58,8 +184,8 @@ export async function startTelegram(d: Deps) {
           caption: text.slice(0, 1000),
         });
       else
-        for (const chunk of text.match(/.{1,3900}/gs) ?? ["Selesai"])
-          await bot.api.sendMessage(id, chunk);
+        for (const chunk of telegramMessages(text))
+          await bot.api.sendMessage(id, chunk.text, { entities: chunk.entities });
     }
     return { ok: true };
   };
@@ -102,7 +228,11 @@ export async function startTelegram(d: Deps) {
     bot.command(name, async ctx => {
       const s = await session(ctx);
       if (d.agent.running.has(String(s.id))) return ctx.reply("Task masih berjalan. Gunakan /stop terlebih dahulu.");
-      void d.agent.run(String(s.id), `/${name} ${ctx.match}`.trim()).then(result => ctx.reply(result.slice(0, 3900))).catch(e => ctx.reply(String(e.message).slice(0, 3900)));
+      const rawPrompt = `/${name} ${ctx.match}`.trim();
+      const prompt = ["mode", "permissions", "model", "clear", "compact", "cost", "doctor"].includes(name)
+        ? rawPrompt
+        : telegramPrompt(ctx.message as TelegramPromptMessage).replace(/^\/[\w]+(?:@[\w]+)?/, `/${name}`);
+      void animatedReply(ctx, () => d.agent.run(String(s.id), prompt), `/${name.toUpperCase()}`).catch(() => {});
     });
   bot.callbackQuery(/^answer:/, async ctx => {
     const [, id, index] = ctx.callbackQuery.data.split(":");
@@ -356,7 +486,7 @@ export async function startTelegram(d: Deps) {
       await ctx.answerCallbackQuery(
         decision === "yes" ? "Disetujui" : "Ditolak",
       );
-      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
+      await ctx.deleteMessage().catch(() => ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }));
     } catch {
       await ctx.answerCallbackQuery("Approval kedaluwarsa");
     }
@@ -393,11 +523,9 @@ export async function startTelegram(d: Deps) {
           return ctx.reply(`Skill ${meta.name} diinstal.`);
         } catch {}
       }
-      const caption = ctx.message.caption?.trim() ?? "";
+      const caption = telegramPrompt(ctx.message as TelegramPromptMessage).trim();
       await ctx.reply(`File diterima: ${name}. Saya akan menganalisis isinya.`);
-      if (!d.agent.running.has(String(s.id))) void d.agent.run(String(s.id), `${caption ? `Instruksi pengguna: ${caption}\n` : ""}Analisis lampiran @${name} dan berikan ringkasan, fakta penting, serta keterbatasan. ${ctx.message.voice ? "Jika tidak tersedia alat transkripsi audio, jelaskan keterbatasannya tanpa mengarang transkrip." : ""}`)
-        .then(result => ctx.reply(result.slice(0, 3900)))
-        .catch(error => ctx.reply(`Analisis file gagal: ${error instanceof Error ? error.message : "error"}`));
+      if (!d.agent.running.has(String(s.id))) void animatedReply(ctx, () => d.agent.run(String(s.id), `${caption ? `Instruksi pengguna: ${caption}\n` : ""}Analisis lampiran @${name} dan berikan ringkasan, fakta penting, serta keterbatasan. ${ctx.message.voice ? "Jika tidak tersedia alat transkripsi audio, jelaskan keterbatasannya tanpa mengarang transkrip." : ""}`), "MENGANALISIS FILE").catch(() => {});
       else await ctx.reply("Ada tugas yang masih berjalan; file tersimpan dan belum dianalisis.");
     },
   );
@@ -434,7 +562,8 @@ export async function startTelegram(d: Deps) {
       }
       return;
     }
-    if (/\b(sk-|gsk_|AIza)[\w-]{12,}/.test(ctx.message.text)) {
+    const prompt = telegramPrompt(ctx.message as TelegramPromptMessage);
+    if (/\b(sk-|gsk_|AIza)[\w-]{12,}/.test(prompt)) {
       await ctx.deleteMessage().catch(() => {});
       return ctx.reply(
         "Key tidak diproses sebagai task. Gunakan /addprovider agar tersimpan terenkripsi.",
@@ -447,82 +576,147 @@ export async function startTelegram(d: Deps) {
       return ctx.reply("Task masih berjalan. Gunakan /stop atau /new.");
     const stop = () =>
       new InlineKeyboard().text("⛔ Stop", `stop:${s.id}`);
-    const usage = d.agent.sessionUsage(String(s.id));
-    const wait = await ctx.reply(`Mode ${d.tools.state.mode(String(s.id))} · ${usage.provider ?? "provider belum tersedia"}/${usage.model ?? "—"}\n⏳ Agent berpikir…`, {
+    const startedAt = Date.now();
+    const wait = await ctx.reply(`${SPIN[0]} PANSA · MENYIAPKAN\n${barText(0, false)}  ·  ${d.tools.state.mode(String(s.id)).toUpperCase()}\n\nMembangunkan asisten…`, {
       reply_markup: stop(),
     });
+    void ctx.react("👀").catch(() => {});
     const typing = () =>
       void ctx.api.sendChatAction(ctx.chat.id, "typing").catch(() => {});
     typing();
     const typingTimer = setInterval(typing, 4000);
     let text = "",
+      thought = "",
       last = 0,
-      current = "",
-      busy = false;
+      current = "Menyiapkan konteks pribadi",
+      frame = 0,
+      busy = false,
+      dirty = true,
+      finished = false,
+      finishedStatus = "",
+      revealed = 0;
     const steps: string[] = [];
+    const SHOW = 3000;
     const render = () => {
-      const body = [steps.slice(-4).join("\n"), current, text.trim()]
-        .filter(Boolean)
-        .join("\n\n");
-      return body.slice(-3900) || "⏳ Agent berpikir…";
+      const u = d.agent.sessionUsage(String(s.id));
+      const secs = Math.max(0, (Date.now() - startedAt) / 1000);
+      const phase = finished
+        ? finishedStatus === "done" ? "SELESAI" : "GAGAL"
+        : text.length > 0
+          ? "MENULIS JAWABAN"
+          : steps.length
+            ? "MENGOLAH HASIL"
+            : secs > 2
+              ? "BERPIKIR"
+              : "MENYIAPKAN";
+      const spinner = finished
+        ? finishedStatus === "done" ? "🎉" : "⚠️"
+        : SPIN[frame % SPIN.length];
+      const dots = ["", "·", "••", "•••"][frame % 4];
+      const title = `${spinner} PANSA · ${phase} ${dots}`;
+      const bar = barText(frame, finished);
+      const pct = finished ? " 100%" : " BERJALAN";
+      const meta = `${d.tools.state.mode(String(s.id)).toUpperCase()}  ·  ${u.provider ?? "provider?"}/${u.model ?? "—"}  ·  ${clockFrom(startedAt)}  ·  ${steps.length} langkah`;
+      const activity = finished
+        ? finishedStatus === "done"
+          ? "\n✅ Semua langkah selesai"
+          : `\n❌ ${current}`
+        : current
+          ? `\n${current}`
+          : "";
+      const history = steps.length ? `\n\n${steps.slice(-4).join("\n")}` : "";
+      const preview = (finished ? text.slice(0, revealed) : text || thought).trim();
+      const cursor = finished && revealed < Math.min(text.length, SHOW) ? "▍" : preview && !finished && frame % 2 ? "▍" : "";
+      const content = preview ? `\n\n${preview.slice(0, SHOW)}${cursor}` : "";
+      const body = `${title}\n${bar} · ${pct}\n${meta}${activity}${history}${content}`;
+      return body.slice(0, 3900);
     };
-    const flush = () => {
-      if (busy) return;
+    const flush = async (force = false) => {
+      dirty = true;
+      if (busy || (!force && Date.now() - last < 1050)) return;
+      dirty = false;
       busy = true;
       last = Date.now();
-      void ctx.api
+      await ctx.api
         .editMessageText(ctx.chat.id, wait.message_id, render(), {
-          reply_markup: stop(),
+          reply_markup: finished ? new InlineKeyboard() : stop(),
         })
         .catch(() => {})
-        .finally(() => (busy = false));
+        .finally(() => { busy = false; });
+    };
+    const settle = async () => {
+      while (busy) await sleep(30);
     };
     const listener = (e: LiveEvent) => {
       if (e.session_id !== s.id) return;
-      if (e.type === "token") text += String(e.data.text ?? "");
+      if (e.type === "token") {
+        text += String(e.data.text ?? "");
+        current = "✍️ Menyusun jawaban";
+      }
       else if (e.type === "tool") {
+        if (text.trim()) thought = text.trim();
         text = "";
-        const cmd = e.data.command
-          ? `$ ${String(e.data.command).slice(0, 120)}`
-          : String(e.data.name);
-        if (e.data.status === "running") current = `💻 ${cmd}`;
+        const name = String(e.data.name ?? e.data.tool ?? "alat");
+        const command = e.data.command ? ` · ${String(e.data.command).slice(0, 100)}` : "";
+        const cmd = `${name}${command}`;
+        if (e.data.status === "running") current = `⚙️ Menjalankan ${cmd}`;
         else {
           const secs = Number(e.data.durationMs ?? 0);
           const exit = e.data.exitCode;
           steps.push(
             [
-              e.data.status === "done" ? "✓" : "✗",
-              cmd,
-              secs >= 1000 ? `(${Math.round(secs / 1000)} dtk)` : "",
+              e.data.status === "done" ? "✅" : "❌",
+              name,
+              secs >= 1000 ? `${Math.round(secs / 1000)} dtk` : "",
               exit === undefined || exit === null ? "" : `exit ${String(exit)}`,
             ]
               .filter(Boolean)
               .join(" "),
           );
-          current = "";
+          current = e.data.status === "done" ? "🔎 Memeriksa hasil tool" : "🧭 Menyesuaikan langkah berikutnya";
         }
       } else if (e.type === "progress" && e.data.kind !== "context") {
-        current = String(e.data.text ?? "").slice(0, 300);
+        current = `${e.data.kind === "todo" ? "📍" : e.data.kind === "subagent" ? "🧩" : "💡"} ${String(e.data.text ?? "Sedang memproses").slice(0, 240)}`;
       } else if (e.type === "progress" && e.data.kind === "context" && Number(e.data.percent) >= 70) {
-        current = `Konteks ~${e.data.percent}% (estimasi). Gunakan /compact.`;
+        current = `🧠 Menata konteks percakapan · ~${e.data.percent}%`;
       } else return;
-      if (Date.now() - last > 1100) flush();
+      dirty = true;
     };
     d.store.bus.on("event", listener);
+    const animationTimer = setInterval(() => {
+      frame++;
+      if (dirty || Date.now() - last > 1600) void flush();
+    }, 1150);
+    animationTimer.unref?.();
+    const reveal = async (result: string) => {
+      await settle();
+      await typeOut(ctx, wait, result);
+    };
     void d.agent
-      .run(String(s.id), ctx.message.text)
+      .run(String(s.id), prompt)
       .then(async (result) => {
-        for (const chunk of result.match(/.{1,3900}/gs) ?? ["Selesai"])
-          await ctx.reply(chunk);
-        await ctx.api
-          .deleteMessage(ctx.chat.id, wait.message_id)
-          .catch(() => {});
+        clearInterval(animationTimer);
+        d.store.bus.off("event", listener);
+        finished = true;
+        finishedStatus = "done";
+        thought = "";
+        current = "";
+        void ctx.react("🎉").catch(() => {});
+        text = result;
+        await reveal(result);
       })
-      .catch((e) =>
-        ctx.reply(`Gagal: ${e instanceof Error ? e.message : "error"}`),
-      )
+      .catch(async (e) => {
+        finished = true;
+        finishedStatus = "error";
+        current = e instanceof Error ? e.message : "Task gagal";
+        text = "";
+        void ctx.react("😢").catch(() => {});
+        await settle();
+        await flush(true);
+      })
       .finally(() => {
         clearInterval(typingTimer);
+        clearInterval(animationTimer);
         d.store.bus.off("event", listener);
       });
   });

@@ -2,7 +2,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { mkdtemp, writeFile, symlink, rm, readFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { encrypt, decrypt, safePath, redact, checkURL } from "./security.js";
+import { encrypt, decrypt, safePath, isWithinAllowlist, redact, checkURL } from "./security.js";
+import { telegramHtml, telegramMessages } from "./telegram-format.js";
 import { Store } from "./store.js";
 import { Providers, quality, cooldown, type Message } from "./providers.js";const key = "a".repeat(64);
 afterEach(() => vi.restoreAllMocks());
@@ -26,6 +27,11 @@ describe("encryption", () => {
   });
 });
 describe("sandbox guard", () => {
+  it("limits a selected workspace to an allowed directory subtree", () => {
+    expect(isWithinAllowlist("/srv/projects/app", ["/srv/projects"])).toBe(true);
+    expect(isWithinAllowlist("/srv/projects-old/app", ["/srv/projects"])).toBe(false);
+    expect(isWithinAllowlist("/etc/passwd", ["/srv/projects"])).toBe(false);
+  });
   it("blocks traversal, absolute paths and escaping symlinks", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "pansa-test-"));
     try {
@@ -97,6 +103,41 @@ describe("memory", () => {
       expect(await readFile(path.join(dir, "MEMORY.md"), "utf8")).not.toContain(saved.id);
       expect(await readFile(path.join(dir, "USER.md"), "utf8")).not.toContain(saved.id);
     } finally { db.db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+describe("Telegram formatting", () => {
+  it("renders underline as a native Telegram entity", () => {
+    const [message] = telegramMessages("++underline++");
+    expect(message!.text).toBe("underline");
+    expect(message!.entities.map(entity => entity.type)).toEqual(["underline"]);
+  });
+  it("preserves long code blocks and emoji across Telegram message limits", () => {
+    const code = `😀${"const x = 1;\n".repeat(400)}`;
+    const messages = telegramMessages(`\`\`\`js\n${code}\n\`\`\``);
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.map(message => message.text).join("")).toContain(code);
+    for (const message of messages) {
+      expect(message.text.length).toBeLessThanOrEqual(3600);
+      expect(message.entities.some(entity => entity.type === "pre" && entity.language === "js")).toBe(true);
+      expect(message.entities.every(entity => entity.offset >= 0 && entity.offset + entity.length <= message.text.length)).toBe(true);
+    }
+  });
+  it("treats HTML and unsafe links as text", () => {
+    const messages = telegramMessages('<script>alert(1)</script> [bad](javascript:alert(1))');
+    expect(messages[0]!.text).toContain("<script>");
+    expect(messages[0]!.entities.some(entity => entity.type === "text_link")).toBe(false);
+  });
+  it("converts Markdown emphasis, code, quotes, lists, and links to Telegram HTML", () => {
+    const html = telegramHtml("## Title\n\n**bold** and *italic* and ~~removed~~\n\n`const x = 1`\n\n> quoted\n\n- one\n- two\n\n[site](https://example.com)");
+    expect(html).toContain("<b>Title</b>");
+    expect(html).toContain("<b>bold</b>");
+    expect(html).toContain("<i>italic</i>");
+    expect(html).toContain("<s>removed</s>");
+    expect(html).toContain("<code>const x = 1</code>");
+    expect(html).toContain("<blockquote>");
+    expect(html).toContain("• one");
+    expect(html).toContain('<a href="https://example.com">site</a>');
+    expect(html).not.toContain("<script>");
   });
 });
 describe("provider manager", () => {  it("rejects empty/refusal/repetitive/malformed responses", () => {

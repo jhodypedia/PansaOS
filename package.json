@@ -1,5 +1,5 @@
 {
   "name": "pansaos", "private": true, "version": "1.0.0", "workspaces": ["apps/*"],
   "scripts": {"dev": "concurrently -k \"npm run dev -w @pansa/core\" \"npm run dev -w @pansa/dashboard\"", "build": "npm run build --workspaces", "typecheck": "npm run typecheck --workspaces", "test": "npm run test -w @pansa/core"},
-  "devDependencies": {"concurrently": "^9.1.2", "typescript": "^5.7.3"}, "engines": {"node": ">=20.9.0"}
+  "devDependencies": {"concurrently": "^9.1.2", "typescript": "^5.7.3"}, "engines": {"node": ">=20.19.0"}
 }

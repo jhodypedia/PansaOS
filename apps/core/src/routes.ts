@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import multipart from "@fastify/multipart";
 import { config } from "./config.js";
-import { safePath, hash } from "./security.js";
+import { isWithinAllowlist, safePath, hash } from "./security.js";
 import type { Store } from "./store.js";
 import type { Tools } from "./tools.js";
 import type { Providers } from "./providers.js";
@@ -115,8 +115,11 @@ export async function routes(
     if (config.EXEC_MODE !== "host") return reply.code(409).send({ error: "Direktori per session hanya tersedia di mode host" });
     if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session tidak ditemukan" });
     const { directory } = z.object({ directory: z.string().min(1).max(4096) }).parse(req.body);
-    const target = path.resolve(directory);
-    if (!(await fs.stat(target).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: "Direktori proyek tidak ditemukan" });
+    const target = await fs.realpath(path.resolve(directory)).catch(() => null);
+    if (!target || !(await fs.stat(target).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: "Direktori proyek tidak ditemukan" });
+    const allowed = await Promise.all(config.workspaceAllowlist.map((root) => fs.realpath(root).catch(() => null)));
+    if (!isWithinAllowlist(target, allowed.filter((root): root is string => Boolean(root))))
+      return reply.code(403).send({ error: "Direktori tidak ada dalam WORKSPACE_ALLOWLIST" });
     tools.sandbox.setRoot(id, target);
     return { directory: target };
   });

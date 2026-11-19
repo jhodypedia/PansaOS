@@ -6,7 +6,7 @@ Satu core dipakai oleh CLI `pansa`, Telegram, dan dashboard web. Riwayat tersimp
 
 ## Instalasi global di Linux VPS
 
-Persyaratan: Node.js >=20.9 (disarankan Node 22 LTS), npm, compiler/build tools untuk `better-sqlite3` bila prebuilt binary tidak tersedia. Docker opsional untuk mode isolasi.
+Persyaratan: Linux, Node.js >=20.19, npm, `rsync`, dan build tools bila binary `better-sqlite3` tidak tersedia. Untuk service terisolasi gunakan distro dengan systemd; Docker tidak diperlukan.
 
 ```bash
 git clone https://github.com/jhodypedia/PansaOS.git
@@ -14,9 +14,13 @@ cd PansaOS
 ./install.sh
 ```
 
-Installer memasang aplikasi ke `/opt/pansaos` (atau `~/.local/share/pansaos` tanpa hak tulis sistem), membangun core dan dashboard, memasang perintah global `pansa`, serta membuat `~/.pansa/.env` dengan `MASTER_KEY` dan `DASH_TOKEN` acak tanpa menimpa konfigurasi yang sudah ada. File env diberi mode `600`. Jika `~/.local/bin` belum ada di `PATH`, tambahkan direktori tersebut.
+Installer membangun aplikasi di staging lalu mengaktifkannya setelah build berhasil; update service yang gagal start mengembalikan instalasi sebelumnya. Aplikasi dipasang ke `/opt/pansaos` (atau `~/.local/share/pansaos` tanpa hak tulis sistem), dan konfigurasi di `~/.pansa/.env` tidak ditimpa. File env diberi mode `600`.
 
-Jalankan mode server VPS dengan `sudo ./install.sh --service` setelah pemasangan, atau gunakan `pansa serve`. Opsi service membuat dan mengaktifkan `pansa.service` dengan restart otomatis. Atur `PUBLIC_URL`, `BOT_TOKEN`, dan `ADMIN_IDS` di `~/.pansa/.env` bila memakai Telegram dan dashboard publik; lindungi akses web dengan reverse proxy TLS serta firewall.
+Jalankan mode server VPS dengan `sudo ./install.sh --service`. Service systemd menjalankan tool shell lokal di host, tanpa Docker, dengan `ProtectHome=tmpfs` dan `ProtectSystem=strict`; hanya `PANSA_HOME` dan direktori yang diizinkan yang di-bind ke service. Ini didukung pada distro Linux yang memakai systemd. Mode `pansa serve` manual tidak mendapat pembatas filesystem dari systemd.
+
+Atur `WORKSPACE_ALLOWLIST` di `~/.pansa/.env` sebagai daftar direktori dipisahkan koma. Direktori default hanya `~/.pansa/workspace`; tambahkan path proyek yang memang boleh dibaca/ditulis, misalnya `WORKSPACE_ALLOWLIST=/home/alice/projects,/srv/web`. CLI menolak memilih direktori di luar daftar ini. Jalankan ulang installer dengan `--service` setelah mengubah daftar agar bind systemd diperbarui. `PUBLIC_URL`, `BOT_TOKEN`, dan `ADMIN_IDS` juga diatur pada file env tersebut.
+
+Pembatasan service menyembunyikan home lain dan membuat filesystem sistem read-only. File sistem yang diperlukan runtime tetap dapat dibaca. Core dan shell memakai akun yang sama sehingga shell masih dapat mengakses state dan konfigurasi Pansa di `PANSA_HOME`; ini belum merupakan isolasi rahasia atau batas baca hanya ke workspace.
 
 ## Mulai menggunakan
 
@@ -33,13 +37,15 @@ pansa doctor
 pansa provider add
 ```
 
-Tool file dan shell menggunakan direktori proyek aktif. Persetujuan tampil untuk operasi tulis, tool shell, git/npm, pengunduhan yang menimpa file, permintaan HTTP mutatif, serta command destruktif. `--yes` mengaktifkan kebijakan auto-approval untuk session `run`; gunakan hanya pada tugas yang Anda percayai.
+Tool file dan shell menggunakan direktori proyek aktif yang harus berada di `WORKSPACE_ALLOWLIST`. Persetujuan tampil untuk operasi tulis, tool shell, git/npm, pengunduhan yang menimpa file, permintaan HTTP mutatif, serta command destruktif. `--yes` mengaktifkan kebijakan auto-approval untuk session `run`; gunakan hanya pada tugas yang Anda percayai.
 
 Perintah REPL: `/new`, `/continue SESSION_ID`, `/model`, `/providers`, `/memory`, `/doctor`, `/stop`, `/exit`. Untuk input API key, `pansa provider add` memakai input terminal tanpa echo dan provider disimpan terenkripsi.
 
 ### Telegram
 
 Isi `BOT_TOKEN` dari BotFather dan `ADMIN_IDS` (ID numerik dipisahkan koma), lalu jalankan `pansa serve`. Bot hanya menerima admin. Pesan teks digunakan untuk tanya-jawab dan tugas; lampiran dokumen/foto diteruskan ke agent untuk analisis. Gunakan `/memory kata`, `/forget kata`, atau pesan `lupakan <fakta>`. Buat pengingat dengan `/schedule CRON|TASK` (UTC). `/doctor` memeriksa provider melalui ID provider asli; `/dashboard` memberi link login sekali pakai.
+
+Balasan memakai format native Telegram untuk Markdown: `**tebal**`, `*miring*`, `~~coret~~`, inline code, fenced code block, quote, list, dan link. `++garis bawah++` juga didukung. Pesan panjang dipecah dengan mempertahankan entitas format. Setelah keputusan approval, kartu approval dihapus; jika Telegram menolak penghapusan, tombol dinonaktifkan. Format pada pesan user tetap dipilih melalui menu Telegram; bot membaca entitasnya beserta kutipan dan konteks reply.
 
 Jangan kirim password atau API key di chat biasa. Tambahkan provider melalui wizard aman di CLI atau dashboard. Pengiriman pesan, posting, pembelian, atau tindakan eksternal atas nama pengguna memerlukan persetujuan eksplisit.
 
