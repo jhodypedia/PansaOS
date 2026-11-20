@@ -118,14 +118,16 @@ ensure_env() {
   if ! grep -q "^${key}=" "$ENV_FILE"; then printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"; fi
 }
 ensure_env MASTER_KEY "$(openssl rand -hex 32)"
+NEW_DASH_TOKEN=false
+if ! grep -q '^DASH_TOKEN=' "$ENV_FILE"; then NEW_DASH_TOKEN=true; fi
 ensure_env DASH_TOKEN "$(openssl rand -hex 32)"
 ensure_env PANSA_HOME "$PANSA_HOME"
 ensure_env EXEC_MODE host
 ensure_env WORKSPACE_DIR "$PANSA_HOME/workspace"
 ensure_env WORKSPACE_ALLOWLIST "$PANSA_HOME/workspace"
-ensure_env PUBLIC_URL http://localhost:3000
+ensure_env PUBLIC_URL "${PUBLIC_URL:-http://localhost:${DASHBOARD_PORT:-3000}}"
 ensure_env PORT 3001
-ensure_env DASHBOARD_PORT 3000
+ensure_env DASHBOARD_PORT "${DASHBOARD_PORT:-3000}"
 ensure_env SKILLS_DIR "$PANSA_HOME/skills"
 ensure_env PLUGINS_DIR "$PANSA_HOME/plugins"
 
@@ -225,3 +227,6 @@ fi
 if [[ -n "$BACKUP" ]]; then rm -rf "$BACKUP"; fi
 BACKUP=""
 printf 'Pansa installed at %s; PANSA_HOME=%s\n' "$PREFIX" "$PANSA_HOME"
+SERVICE_STARTED=false
+if [[ "$SERVICE" == true && "${PANSA_NO_START:-0}" != 1 ]]; then SERVICE_STARTED=true; fi
+node "$PREFIX/scripts/install-summary.mjs" "$ENV_FILE" "$NEW_DASH_TOKEN" "$SERVICE_STARTED"

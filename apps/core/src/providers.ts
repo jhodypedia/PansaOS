@@ -78,6 +78,18 @@ export function quality(
 export function cooldown(level: number): number {
   return Math.min(120000 * 2 ** level, 1800000);
 }
+
+class ContextLimitError extends Error {
+  constructor() { super("The model rejected the request because its context window is full."); }
+}
+
+async function completionError(response: Response): Promise<Error> {
+  if ([400, 413, 422].includes(response.status)) {
+    const body = await limitedBody(response, 16384).catch(() => Buffer.alloc(0));
+    if (/context_length_exceeded|context_window_exceeded|maximum context length|exceeds? (?:the |its )?(?:model.s? )?context (?:window|length)|prompt is too long/i.test(body.toString())) return new ContextLimitError();
+  } else await response.body?.cancel();
+  return new Error(`HTTP ${response.status}`);
+}
 export class Providers {
   private windows = new Map<string, number[]>();
   constructor(
@@ -87,10 +99,10 @@ export class Providers {
     this.refreshSecrets();
   }
   refreshSecrets() {
-    this.store.secrets = this.store
+    this.store.secrets = [...this.store.protectedSecrets, ...this.store
       .all("SELECT api_key,custom_headers FROM providers")
       .flatMap((p) => [decrypt(String(p.api_key), this.master), ...Object.values(this.customHeaders(p))])
-      .filter(Boolean);
+      .filter(Boolean)];
   }
   private customHeaders(provider: Row): Record<string, string> {
     return provider.custom_headers ? customHeadersSchema.parse(JSON.parse(decrypt(String(provider.custom_headers), this.master))) : {};
@@ -208,7 +220,7 @@ export class Providers {
         body: JSON.stringify(responsesBody(messages, tools, String(p.model), Number(p.max_output_tokens ?? 4096), source)),
         signal: AbortSignal.any([signal, AbortSignal.timeout(Number(p.timeout_ms ?? 120000))]), redirect: "error",
       });
-      if (!response.ok) { await response.body?.cancel(); throw new Error(`HTTP ${response.status}`); }
+      if (!response.ok) throw await completionError(response);
       return { ...await readResponses(response, onToken, Math.ceil(JSON.stringify(messages).length / 4)), responseSource: source };
     }
     const body: Record<string, unknown> = {
@@ -267,10 +279,7 @@ export class Providers {
         redirect: "error",
       },
     );
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) throw await completionError(response);
     if (native) {
       const data = (await response.json().catch(() => { throw new Error("Provider returned invalid JSON"); })) as {
         content: {
@@ -375,6 +384,7 @@ export class Providers {
     pin?: string,
     strict = false,
     capability?: string,
+    prepare?: (provider: Row, tighter?: boolean) => Message[],
   ): Promise<Completion> {
     let candidates = this.store.all(
       "SELECT * FROM providers WHERE enabled=1 ORDER BY priority",
@@ -399,7 +409,11 @@ export class Providers {
     for (const p of candidates) {
       signal.throwIfAborted();
       const id = String(p.id);
-      if (Number(p.cooldown_until) > Date.now()) continue;
+      if (Number(p.cooldown_until) > Date.now()) {
+        previous = id;
+        reason = "provider cooldown";
+        continue;
+      }
       const window = (this.windows.get(id) ?? []).filter(
         (t) => t > Date.now() - 60000,
       );
@@ -408,6 +422,8 @@ export class Providers {
         reason = "local rate limit";
         continue;
       }
+      let input = prepare?.(p) ?? messages;
+      let retriedContext = false;
       if (previous)
         this.store.event("switch", session, {
           from: previous,
@@ -427,7 +443,7 @@ export class Providers {
         try {
           const result = await this.request(
             p,
-            messages,
+            input,
             tools,
             signal,
             onToken,
@@ -451,6 +467,13 @@ export class Providers {
           return { ...result, provider: id, cost };
         } catch (e) {
           signal.throwIfAborted();
+          if (e instanceof ContextLimitError && prepare) {
+            if (retriedContext) throw e;
+            retriedContext = true;
+            input = prepare(p, true);
+            attempt--;
+            continue;
+          }
           reason = e instanceof Error ? e.message : "Provider error";
           previous = id;
           const failures =

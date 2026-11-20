@@ -15,6 +15,7 @@ import { Skills } from "./skills.js";
 import { Tools } from "./tools.js";
 import { Agent } from "./agent.js";
 import { startTelegram } from "./telegram.js";
+import { TelegramSettings, telegramSettingsRoutes } from "./telegram-settings.js";
 import { equal } from "./security.js";
 import { hash } from "./security.js";
 import { randomBytes } from "node:crypto";
@@ -28,6 +29,10 @@ import { MCP, ServerSchema } from "./mcp.js";
 await mkdir(config.data, { recursive: true });
 await mkdir(config.workspace, { recursive: true });
 const store = new Store(path.join(config.data, "pansaos.sqlite"));
+const telegramSettings = new TelegramSettings(store, config.MASTER_KEY, { token: config.BOT_TOKEN, adminIds: config.admins });
+const telegramConnection = telegramSettings.connection();
+config.BOT_TOKEN = telegramConnection.enabled ? telegramConnection.token : "";
+config.admins = telegramConnection.adminIds;
 await mkdir(config.home, { recursive: true });
 const providers = new Providers(store, config.MASTER_KEY);
 const skills = new Skills();
@@ -139,6 +144,7 @@ app.addHook("onResponse", async (req, reply) => {
     });
 });
 await routes(app, store, tools, providers, agent);
+telegramSettingsRoutes(app, telegramSettings);
 app.setErrorHandler((error: unknown, req, reply) => {
   if (error instanceof z.ZodError)
     return reply.code(400).send({
@@ -398,10 +404,10 @@ store.run(
   "UPDATE approvals SET status='expired' WHERE status='pending' AND created_at < datetime('now','-1 day')",
 );
 if (config.BOT_TOKEN)
-  await startTelegram({ store, providers, skills, tools, agent, app }).catch(
-    (e) =>
+  await startTelegram({ store, providers, skills, tools, agent, app }).then(() => telegramSettings.markStarted()).catch(
+    () =>
       app.log.error(
-        { message: e instanceof Error ? e.message : "Telegram failed" },
+        { message: "Check the bot token and server connectivity in Telegram settings." },
         "telegram initialization failed",
       ),
   );

@@ -155,21 +155,8 @@ async function secretQuestion(rl: ReturnType<typeof createInterface>, prompt: st
 }
 
 async function saveTelegram(token: string, adminIds: string) {
-  const current = await fs.readFile(envFile, "utf8");
-  const replacements = new Map([["BOT_TOKEN", token.trim()], ["ADMIN_IDS", adminIds.trim()], ["TELEGRAM_MODE", "auto"]]);
-  const seen = new Set<string>();
-  const lines = current.split(/\r?\n/).flatMap((line) => {
-    const key = /^([A-Z_][A-Z0-9_]*)=/.exec(line)?.[1];
-    if (!key || !replacements.has(key)) return [line];
-    if (seen.has(key)) return [];
-    seen.add(key);
-    return [`${key}=${replacements.get(key)}`];
-  }).filter((line, index, all) => line || index < all.length - 1);
-  for (const [key, value] of replacements) if (!seen.has(key)) lines.push(`${key}=${value}`);
-  const temp = `${envFile}.${process.pid}.tmp`;
-  await fs.writeFile(temp, `${lines.join("\n").replace(/\n+$/, "")}\n`, { mode: 0o600 });
-  await fs.rename(temp, envFile);
-  await fs.chmod(envFile, 0o600);
+  await startCore();
+  await request("/api/settings/telegram", { bot_token: token.trim(), admin_ids: adminIds, enabled: true }, "PUT");
 }
 
 async function main() {
@@ -248,8 +235,10 @@ async function main() {
       if (!ids.length || ids.some((id) => !/^\d+$/.test(id))) throw new Error("Admin IDs must be comma-separated numbers");
       await saveTelegram(token, adminIds);
     } finally { rl.close(); }
-    try { execFileSync("sudo", ["-n", "systemctl", "restart", "pansa.service"], { stdio: "ignore" }); console.log("Bot settings saved in a permission-protected file (600); service restarted."); }
-    catch { console.log("Settings saved to PANSA_HOME/.env (mode 600). Run `pansa serve` or restart pansa.service."); }
+    const health = await fetch(`${base}/health`).then(response => response.json()) as { running: number };
+    if (health.running > 0) { console.log("Telegram settings saved encrypted. Finish active tasks, then restart PansaOS to apply them."); return; }
+    try { execFileSync("sudo", ["-n", "systemctl", "restart", "pansa.service"], { stdio: "ignore" }); console.log("Telegram settings saved encrypted; service restarted."); }
+    catch { console.log("Telegram settings saved encrypted. Restart PansaOS or pansa.service to apply them."); }
     return;
   }
   if (command === "run") {

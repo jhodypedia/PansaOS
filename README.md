@@ -23,11 +23,13 @@ pansa serve
 
 Open `http://localhost:3000` and sign in with `DASH_TOKEN` from `~/.pansa/.env`. In **Providers → Add provider**, enter your endpoint, credentials, and model ID, then select **Test connection**. Open **Chat** to start a session and choose its preferred model.
 
+On first installation, the installer displays the dashboard address and generated sign-in token. Updates preserve your token without printing it again.
+
 For a managed service on a server with systemd, use `sudo ./install.sh --service` in place of the manual install and start commands. The service runs under a non-root account. For updates, check out a newer release and rerun the installer. Keep your `MASTER_KEY` so existing encrypted credentials remain readable.
 
 ## Connect Telegram or use the CLI
 
-To connect Telegram, run `pansa telegram setup` or set `BOT_TOKEN` and `ADMIN_IDS` in `~/.pansa/.env`. In Telegram, `/start` opens the command menu, `/model` opens the model picker, and `/dashboard` generates a one-time sign-in link.
+To connect Telegram, open **Settings → Telegram** in the dashboard or run `pansa telegram setup`. Add a BotFather token and numeric admin user IDs, test the bot, and save. Dashboard settings are encrypted and take precedence over `BOT_TOKEN`/`ADMIN_IDS` environment defaults. Restart PansaOS after saving to apply changes. In Telegram, `/start` opens the command menu, `/model` opens the model picker, and `/dashboard` generates a one-time sign-in link.
 
 From a project directory listed in `WORKSPACE_ALLOWLIST`, run `pansa` for an interactive session or `pansa run "Explain this project"` for a single task. Use `pansa --continue` to resume your last CLI session.
 

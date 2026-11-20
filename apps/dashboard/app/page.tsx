@@ -5,6 +5,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ProviderForm from "./provider-form";
 import ProviderCard from "./provider-card";
+import TelegramSettingsPanel from "./telegram-settings";
+import { mergeChatEvents, readChatSession, rememberChatSession, restoreChatSession } from "./chat-session";
 import {
   motion,
   AnimatePresence,
@@ -484,11 +486,13 @@ function SessionPicker({
   value,
   onChange,
   zone = DEFAULT_TIMEZONE,
+  disabled = false,
 }: {
   sessions: Row[];
   value: string;
   onChange: (id: string) => void;
   zone?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false),
     [active, setActive] = useState(0),
@@ -507,11 +511,11 @@ function SessionPicker({
     ],
     [sessions, zone],
   );
-  const current = options.find((o) => o.id === value) ?? options[0] ?? {
-    id: "",
-    label: "New session",
+  const current = options.find((o) => o.id === value) ?? {
+    id: value,
+    label: "Session unavailable",
     meta: "",
-    fresh: true,
+    fresh: false,
   };
   const place = useCallback(() => {
     const node = trigger.current;
@@ -554,7 +558,7 @@ function SessionPicker({
   }, [open, options, value, place]);
   const pick = (index: number) => {
     const option = options[index];
-    if (!option) return;
+    if (!option || disabled) return;
     onChange(option.id);
     close(true);
   };
@@ -563,6 +567,7 @@ function SessionPicker({
       <button
         ref={trigger}
         type="button"
+        disabled={disabled}
         className="session-trigger"
         aria-label="Session"
         aria-haspopup="listbox"
@@ -593,7 +598,7 @@ function SessionPicker({
             ref={menu}
             className="session-menu"
             role="listbox"
-            aria-label="Daftar session"
+            aria-label="Session list"
             tabIndex={-1}
             style={{
               top: pos.top,
@@ -786,8 +791,16 @@ export default function Dashboard() {
     [settingsInfo, setSettingsInfo] = useState<Row>({}),
     [schedule, setSchedule] = useState({ cron: "0 9 * * *", prompt: "" });
   const [providerEditing, setProviderEditing] = useState<Row | undefined>();
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionMissing, setSessionMissing] = useState(false);
+  const [filesSession, setFilesSession] = useState("");
+  const [scheduleSession, setScheduleSession] = useState("");
+  const sessionRef = useRef("");
+  const selectionRestored = useRef(false);
+  const sending = useRef(false);
   const [providerQuery, setProviderQuery] = useState("");
   const [draftProvider, setDraftProvider] = useState("");
+  const [draftMode, setDraftMode] = useState("build");
   const [providerFilter, setProviderFilter] = useState("all");
   const buffer = useRef("");
   const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -841,29 +854,58 @@ export default function Dashboard() {
   const [commandList, setCommandList] = useState<{ name: string; description: string }[]>([]);
   const [mcpServers, setMcpServers] = useState<Row[]>([]);
   const [mcpForm, setMcpForm] = useState({ name: "", transport: "http", url: "", command: "", args: "", headers: "" });
+  const applyChatSession = useCallback((id: string) => {
+    sessionRef.current = id;
+    setSession(id);
+    setSessionMissing(false);
+    setSessionReady(true);
+    selectionRestored.current = true;
+    try { rememberChatSession(id, window.sessionStorage, window.localStorage); } catch {}
+    setSessionState({});
+    setStream("");
+    buffer.current = "";
+    if (ticker.current) { clearTimeout(ticker.current); ticker.current = null; }
+    followLatest.current = true;
+    setStick(true);
+  }, []);
+  const chooseChatSession = (id: string) => {
+    if (sending.current) return;
+    applyChatSession(id);
+  };
+  useEffect(() => {
+    if (!logged) { selectionRestored.current = false; setSessionReady(false); }
+  }, [logged]);
   useEffect(() => {
     if (!logged) return;
+    let active = true;
     void api("commands").then(r => setCommandList(r as { name: string; description: string }[])).catch(() => {});
     const load = () => {
-      if (session) void api(`sessions/${session}/state`).then(r => setSessionState(r as Row)).catch(() => {});
-      void api("mcp").then(r => setMcpServers(r as Row[])).catch(() => {});
+      if (session) void api(`sessions/${session}/state`).then(r => { if (active && sessionRef.current === session) setSessionState(r as Row); }).catch(() => {});
+      void api("mcp").then(r => { if (active) setMcpServers(r as Row[]); }).catch(() => {});
     };
-    load(); const timer = setInterval(load, 3000); return () => clearInterval(timer);
+    load(); const timer = setInterval(load, 3000); return () => { active = false; clearInterval(timer); };
   }, [logged, session, api]);
   const refresh = useCallback(async () => {
     const [e, p, s, st, a] = await Promise.all([
-      api("events"),
+      api("events?hide=token"),
       api("providers"),
       api("sessions"),
       api("stats"),
       api("approvals"),
     ]);
-    setEvents(e as Row[]);
+    if (!selectionRestored.current) {
+      let remembered = "";
+      try { remembered = readChatSession(window.sessionStorage, window.localStorage); } catch {}
+      const restored = restoreChatSession(remembered, s as Row[]);
+      applyChatSession(restored.id);
+      setSessionMissing(restored.missing);
+    }
+    setEvents(previous => mergeChatEvents(previous, e as Row[], sessionRef.current));
     setProviders(p as Row[]);
     setSessions(s as Row[]);
     setStats(st as Row);
     setApprovals(a as Row[]);
-  }, [api]);
+  }, [api, applyChatSession]);
   const lastId = (rows: Row[]) =>
     Number(rows[rows.length - 1]?.id ?? 0) || 0;
   const fetchPage = useCallback(
@@ -939,7 +981,7 @@ export default function Dashboard() {
   useEffect(() => {
     const once = new URLSearchParams(location.hash.slice(1)).get("login");
     if (once) {
-      history.replaceState(null, "", location.pathname);
+      history.replaceState(null, "", location.pathname + location.search);
       void api("auth", { token: once })
         .then(() => setLogged(true))
         .catch((e) => setError(String(e)));
@@ -973,7 +1015,7 @@ export default function Dashboard() {
       socket.onmessage = ({ data }) => {
         const e = JSON.parse(String(data)) as Row;
         if (e.type === "connected") return;
-        setEvents((prev) => [e, ...prev].slice(0, 300));
+        if (e.type !== "token") setEvents(previous => mergeChatEvents(previous, [e], sessionRef.current));
         if (e.type !== "token") {
           if (pageRef.current === 1) {
             setPageCache((prev) => {
@@ -1060,9 +1102,9 @@ export default function Dashboard() {
   }, [tab, logged, api]);
   const loadFiles = useCallback(
     async (p = filePath) => {
-      if (!session) return;
+      if (!filesSession) return;
       const r = (await api(
-        `sessions/${session}/files?path=${encodeURIComponent(p)}`,
+        `sessions/${filesSession}/files?path=${encodeURIComponent(p)}`,
       )) as Row[] | Row;
       if (Array.isArray(r)) {
         setFileContent("");
@@ -1082,12 +1124,12 @@ export default function Dashboard() {
         );
       }
     },
-    [api, session, filePath],
+    [api, filesSession, filePath],
   );
   useEffect(() => {
-    if (tab !== "files" || !logged || !session) return;
+    if (tab !== "files" || !logged || !filesSession) return;
     void loadFiles().catch((e) => setError(String(e)));
-  }, [tab, logged, session, loadFiles]);
+  }, [tab, logged, filesSession, loadFiles]);
   useEffect(() => {
     if (!logged) return;
     void api("settings")
@@ -1133,21 +1175,27 @@ export default function Dashboard() {
     }
   };
   const send = async (text = prompt) => {
-    if (!text.trim()) return;
-    await action(async () => {
-      let id = session;
-      if (!id) {
-        const created = (await api("sessions", {
-          title: text.slice(0, 50),
-        })) as Row;
-        id = String(created.id);
-        setSession(id);
-        if (draftProvider) await api(`sessions/${id}/model`, { provider: draftProvider }, "PUT");
-      }
-      setStream("");
-      await api(`sessions/${id}/message`, { prompt: text });
-      setPrompt("");
-    }, "Task submitted");
+    if (!text.trim() || busy || running || sending.current || !sessionReady || sessionMissing) return;
+    sending.current = true;
+    try {
+      await action(async () => {
+        let id = sessionRef.current;
+        if (!id) {
+          const created = (await api("sessions", { title: text.slice(0, 50) })) as Row;
+          id = String(created.id);
+          applyChatSession(id);
+          setSessions(previous => [created, ...previous.filter(row => row.id !== id)]);
+          if (draftProvider) await api(`sessions/${id}/model`, { provider: draftProvider }, "PUT");
+          await api(`sessions/${id}/mode`, { mode: draftMode });
+          setSessionState({ mode: draftMode });
+        }
+        setStream("");
+        await api(`sessions/${id}/message`, { prompt: text });
+        setPrompt(previous => previous === text ? "" : previous);
+      }, "Task submitted");
+    } finally {
+      sending.current = false;
+    }
   };
   const data = useCallback(
     (e: Row): Row =>
@@ -1158,17 +1206,12 @@ export default function Dashboard() {
   );
   const merge = useCallback((incoming: Row[]) => {
     setEvents((prev) => {
-      const seen = new Set(prev.map((x) => String(x.id)));
-      const added = incoming.filter((x) => !seen.has(String(x.id)));
-      if (!added.length) return prev;
-      return [...added, ...prev]
-        .sort((a, b) => Number(b.id) - Number(a.id))
-        .slice(0, 600);
+      return mergeChatEvents(prev, incoming, sessionRef.current);
     });
   }, []);
   useEffect(() => {
     if (!logged || !session) return;
-    void api(`events?session=${encodeURIComponent(session)}`)
+    void api(`events?session=${encodeURIComponent(session)}&hide=token`)
       .then((r) => merge(r as Row[]))
       .catch(() => {});
   }, [logged, session, api, merge]);
@@ -1213,6 +1256,13 @@ export default function Dashboard() {
       const { pinned } = await api(`sessions/${session}/model`, { provider: provider || null }, "PUT") as { pinned: string | null };
       setSessions(rows => rows.map(row => row.id === session ? { ...row, pinned } : row));
     }, "Model preference saved for the next task");
+  };
+  const changeMode = async (mode: string) => {
+    if (!session) { setDraftMode(mode); return; }
+    await action(async () => {
+      await api(`sessions/${session}/mode`, { mode });
+      setSessionState(previous => ({ ...previous, mode }));
+    }, null);
   };
   const running = useMemo(() => {
     if (!session) return false;
@@ -1576,7 +1626,7 @@ export default function Dashboard() {
           </div>
         </header>
         <div className={`content${tab === "chat" ? " content-chat" : ""}`} id="workspace-content" tabIndex={-1}>
-          <div className="page-title">
+          <div className={`page-title${tab === "chat" ? " sr-only" : ""}`}>
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="eyebrow !m-0 !text-[8px]">
@@ -1591,7 +1641,7 @@ export default function Dashboard() {
                   {pageDescriptions[tab] ?? t.tagline}
               </p>
             </div>
-            <div className="title-actions">
+            {tab !== "chat" && <div className="title-actions">
               <button
                 className="btn icon-only"
                 aria-label="Refresh"
@@ -1605,12 +1655,12 @@ export default function Dashboard() {
                 onClick={() => {
                   if (tab === "providers") { setProviderEditing(undefined); setShowForm(true); return; }
                   setTab("chat");
-                  setSession("");
+                   chooseChatSession("");
                 }}
               >
                 <Plus size={13} /> {tab === "providers" ? "Add provider" : "New task"}
               </button>
-            </div>
+            </div>}
           </div>
           {error && <div className="error">{error}</div>}
           <AnimatePresence mode="sync">
@@ -1625,7 +1675,7 @@ export default function Dashboard() {
                       <div className={`hero-status ${connected ? "online" : ""}`}><span className="status-dot" />{connected ? "WORKSPACE CONNECTED" : "CONNECTING WORKSPACE"}</div>
                       <h2>Room for ideas.<br /><span>Power to make them happen.</span></h2>
                       <p>From everyday conversations to ambitious projects. Pansa helps you think, remember, and move forward.</p>
-                      <button className="btn primary hero-cta" onClick={() => { setTab("chat"); setSession(""); }}><Sparkles size={16} /> Start a conversation <ArrowUpRight size={16} /></button>
+                       <button className="btn primary hero-cta" onClick={() => setTab("chat")}><Sparkles size={16} /> Open Chat <ArrowUpRight size={16} /></button>
                     </div>
                     <IntelligenceOrb />
                     <div className="hero-bottom"><span><Shield size={13} /> Your server. Your control.</span><span>{sessions.length} sessions <i /> {providers.filter(provider => provider.enabled).length} active providers</span></div>
@@ -1949,8 +1999,8 @@ export default function Dashboard() {
                       className="toolbar"
                       onSubmit={(e) => {
                         e.preventDefault();
-                        if (!session) {
-                          setError("Choose or create a session in Chat first.");
+                         if (!scheduleSession) {
+                           setError("Choose a session for this schedule.");
                           return;
                         }
                         void action(
@@ -1958,7 +2008,7 @@ export default function Dashboard() {
                             api("schedules", {
                               cron: schedule.cron,
                               prompt: schedule.prompt,
-                              session_id: session,
+                               session_id: scheduleSession,
                             }),
                           "Schedule created",
                         ).then(() => setSchedule({ ...schedule, prompt: "" }));
@@ -1966,8 +2016,8 @@ export default function Dashboard() {
                     >
                       <select
                         aria-label="Schedule session"
-                        value={session}
-                        onChange={(e) => setSession(e.target.value)}
+                         value={scheduleSession}
+                         onChange={(e) => setScheduleSession(e.target.value)}
                       >
                         <option value="">Select a session</option>
                         {sessions.map((s) => (
@@ -2074,18 +2124,12 @@ export default function Dashboard() {
               {tab === "chat" && (
                 <section className="panel generic chat-panel">
                   <div className="toolbar chat-toolbar">
-                    {session && <select aria-label="Session mode" value={String(sessionState.mode ?? "build")} onChange={e => { const mode = e.target.value; void api(`sessions/${session}/mode`, { mode }).then(() => setSessionState(prev => ({ ...prev, mode }))); }}><option value="plan">Plan · read only</option><option value="build">Build · session execution permissions</option><option value="ask">Ask · approve each action</option></select>}
                       <SessionPicker
                         sessions={sessions}
                         value={session}
                         zone={zone}
-                      onChange={(id) => {
-                         setSession(id);
-                         setSessionState({});
-                         setStream("");
-                         followLatest.current = true;
-                         setStick(true);
-                      }}
+                       disabled={busy || !sessionReady}
+                       onChange={chooseChatSession}
                     />
                     <div className="seg" role="tablist" aria-label="View mode">
                       <button
@@ -2158,15 +2202,10 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
-                   <label className="chat-model-picker">
-                     <span><Layers size={14} /> Model</span>
-                     <select aria-label="Preferred model for next task" value={enabledProviders.some(provider => provider.id === preferredProvider) ? preferredProvider : ""} disabled={busy || !enabledProviders.length} onChange={event => void changeModel(event.target.value)}>
-                       <option value="">{enabledProviders.length ? "Automatic" : "No enabled providers"}</option>
-                       {enabledProviders.map(provider => <option key={String(provider.id)} value={String(provider.id)}>{String(provider.name)} · {String(provider.model)}</option>)}
-                     </select>
-                   </label>
-                   <div className="chat-shell">
-                    {session && view === "console" && <div className="session-work-panel">
+                    <div className="chat-shell">
+                     {session && view === "console" && <details className="console-session-details">
+                      <summary>Session details</summary>
+                      <div className="session-work-panel">
                       <button className="btn" onClick={() => void action(() => api(`sessions/${session}/permissions`, undefined, "DELETE"), "Session permissions and auto-approve revoked")}><Shield size={13} /> Revoke session permissions</button>
                       <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} tokens · {(sessionState.usage as Row)?.cost == null ? "Cost unknown" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
                       {!!((sessionState.usage as Row)?.context) && <label>Context ~{Number(((sessionState.usage as Row).context as Row).percent)}% (estimated)<progress max={100} value={Number(((sessionState.usage as Row).context as Row).percent)} /></label>}
@@ -2190,7 +2229,8 @@ export default function Dashboard() {
                           }}>Save MCP server</button>
                         </div>
                       </details>
-                    </div>}
+                      </div>
+                     </details>}
                     <div
                       className={`chat-history ${view === "console" ? "console" : ""}`}
                       ref={historyRef}
@@ -2199,7 +2239,9 @@ export default function Dashboard() {
                       aria-label={view === "chat" ? "Conversation history" : "Execution log"}
                       tabIndex={0}
                     >
-                      {!session && (
+                       {!sessionReady && <div className="empty" role="status">Loading sessions…</div>}
+                       {sessionMissing && <div className="empty" role="status">This session is unavailable. Select an existing session to continue.</div>}
+                       {sessionReady && !session && (
                         <div className="empty">
                           <Bot size={32} />
                           <p>Your ideas. Pansa's next move.</p>
@@ -2308,7 +2350,7 @@ export default function Dashboard() {
                     </div>
                   )}
                   <form
-                    className="console-bar"
+                    className="console-bar chat-composer"
                     onSubmit={(e) => {
                       e.preventDefault();
                       void send();
@@ -2327,13 +2369,29 @@ export default function Dashboard() {
                       }}
                     />
                     {prompt.startsWith("/") && !prompt.includes(" ") && <div className="command-autocomplete">{commandList.filter(command => `/${command.name}`.startsWith(prompt)).map(command => <button type="button" className="btn" key={command.name} onClick={() => setPrompt(`/${command.name} `)}>/{command.name} · {command.description}</button>)}</div>}
-                    <button
-                      className="btn primary h-11"
-                      disabled={busy || running || !prompt.trim()}
-                    >
-                      <Send size={14} />
-                      {t.send}
-                    </button>
+                    <div className="composer-controls">
+                      <div className="composer-preferences">
+                        <label className="chat-model-picker" title="Preferred model for the next task">
+                          <Layers size={14} aria-hidden="true" />
+                          <select aria-label="Preferred model for next task" value={enabledProviders.some(provider => provider.id === preferredProvider) ? preferredProvider : ""} disabled={busy || !enabledProviders.length} onChange={event => void changeModel(event.target.value)}>
+                            <option value="">{enabledProviders.length ? "Automatic model" : "No enabled providers"}</option>
+                            {enabledProviders.map(provider => <option key={String(provider.id)} value={String(provider.id)}>{String(provider.name)} · {String(provider.model)}</option>)}
+                          </select>
+                        </label>
+                        <label className="composer-mode-picker" title="Plan: read only · Build: workspace edits · Ask: approve each action">
+                          <Shield size={14} aria-hidden="true" />
+                          <select className="chat-mode-picker" aria-label="Session mode" value={session ? String(sessionState.mode ?? "build") : draftMode} disabled={busy || running} onChange={event => void changeMode(event.target.value)}>
+                            <option value="plan">Plan</option>
+                            <option value="build">Build</option>
+                            <option value="ask">Ask</option>
+                          </select>
+                        </label>
+                      </div>
+                      <button className="btn primary composer-send" type="submit" aria-label="Send task" title="Send task (Ctrl/⌘ + Enter)" disabled={busy || running || !sessionReady || sessionMissing || !prompt.trim()}>
+                        <Send size={16} />
+                        <span>{t.send}</span>
+                      </button>
+                    </div>
                   </form>
                 </section>
               )}
@@ -2361,7 +2419,7 @@ export default function Dashboard() {
                         <button
                           className="btn"
                           onClick={() => {
-                            setSession(String(s.id));
+                             chooseChatSession(String(s.id));
                             setTab("chat");
                           }}
                         >
@@ -2384,10 +2442,7 @@ export default function Dashboard() {
                                 undefined,
                                 "DELETE",
                               );
-                              if (session === String(s.id)) {
-                                setSession("");
-                                setStream("");
-                              }
+                               if (sessionRef.current === String(s.id)) setSessionMissing(true);
                             }, "Session deleted");
                           }}
                         >
@@ -2405,9 +2460,11 @@ export default function Dashboard() {
                     <label className="field-label">Session
                     <select
                       aria-label="Session for workspace files"
-                      value={session}
+                       value={filesSession}
                       onChange={(e) => {
-                        setSession(e.target.value);
+                         setFilesSession(e.target.value);
+                         setFiles([]);
+                         setEditing("");
                         setFilePath(".");
                       }}
                     >
@@ -2430,26 +2487,26 @@ export default function Dashboard() {
                     <div className="files-actions">
                     <button
                       className="btn"
-                      disabled={!session}
+                       disabled={!filesSession}
                       onClick={() =>
                         void loadFiles().catch((e) => setError(String(e)))
                       }
                     >
                       <RefreshCw size={12} /> Load
                     </button>
-                    <button type="button" className="btn" disabled={!session} onClick={() => fileUploadRef.current?.click()}><ArrowDownToLine size={12} /> Upload</button>
+                     <button type="button" className="btn" disabled={!filesSession} onClick={() => fileUploadRef.current?.click()}><ArrowDownToLine size={12} /> Upload</button>
                       <input
                         ref={fileUploadRef}
                         type="file"
                         className="hidden"
                         onChange={(e) => {
                           const f = e.target.files?.[0];
-                          if (!f || !session) return;
+                           if (!f || !filesSession) return;
                           const fd = new FormData();
                           fd.append("file", f);
                           void action(async () => {
                             const r = await fetch(
-                              `/api/sessions/${session}/upload`,
+                               `/api/sessions/${filesSession}/upload`,
                               {
                                 method: "POST",
                                 credentials: "include",
@@ -2468,7 +2525,7 @@ export default function Dashboard() {
                       />
                     </div>
                   </div>
-                  {!session ? (
+                   {!filesSession ? (
                     <div className="empty">
                       Select a session to browse its workspace.
                     </div>
@@ -2513,7 +2570,7 @@ export default function Dashboard() {
                           <button
                             className="btn primary mt-3"
                             onClick={() => {
-                              if (!session) return;
+                               if (!filesSession) return;
                               const fd = new FormData();
                               fd.append(
                                 "file",
@@ -2524,7 +2581,7 @@ export default function Dashboard() {
                               );
                               void action(async () => {
                                 const r = await fetch(
-                                  `/api/sessions/${session}/upload`,
+                                   `/api/sessions/${filesSession}/upload`,
                                   {
                                     method: "POST",
                                     credentials: "include",
@@ -2708,6 +2765,7 @@ export default function Dashboard() {
               {tab === "settings" && (
                 <section className="panel generic">
                   <h2 className="mb-4">Workspace preferences</h2>
+                  <TelegramSettingsPanel api={api} />
                   <div className="list-card">
                     <span>Navigation language</span>
                     <select
@@ -2811,7 +2869,7 @@ export default function Dashboard() {
                     </button>
                   </div>
                   <p className="muted text-xs leading-6">
-                    Configure the admin token, Telegram, encryption key, and execution resources through the server environment. Use the Pansa CLI for backup and restore.
+                    Configure the dashboard token, encryption key, and execution resources through the server environment. Telegram can be configured above. Use the Pansa CLI for backup and restore.
                   </p>
                 </section>
               )}
@@ -2874,14 +2932,6 @@ export default function Dashboard() {
           </footer>
         </div>
       </main>
-      <nav className="mobile-dock" aria-label="Quick navigation">
-        {(["overview", "chat", "live", "memory"] as const).map(key => {
-          const Icon = tabs.find(([name]) => name === key)![1];
-          const label = { overview: "Home", chat: "Chat", live: "Activity", memory: "Memory" }[key];
-          return <button key={key} className={tab === key ? "on" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => { setTab(key); setNavOpen(false); }}><Icon size={19} /><span>{label}</span>{tab === key && <span className="dock-indicator" />}</button>;
-        })}
-        <button aria-label="All sections" onClick={() => setNavOpen(true)}><Menu size={19} /><span>Menu</span></button>
-      </nav>
       <AnimatePresence>
         {notice && (
           <motion.div

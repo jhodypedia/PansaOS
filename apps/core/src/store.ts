@@ -29,6 +29,11 @@ export class Store {
   db: Database.Database;
   bus = new EventEmitter();
   secrets: string[] = [];
+  protectedSecrets: string[] = [];
+  protectSecrets(...values: string[]) {
+    this.protectedSecrets = [...new Set([...this.protectedSecrets, ...values.filter(Boolean)])];
+    this.secrets = [...new Set([...this.secrets, ...this.protectedSecrets])];
+  }
   constructor(file: string) {
     if (file !== ":memory:") mkdirSync(path.dirname(file), { recursive: true });
     this.db = new Database(file);

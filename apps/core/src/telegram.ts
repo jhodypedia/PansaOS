@@ -293,13 +293,18 @@ export async function startTelegram(d: Deps) {
     const result = await d.agent.commands.execute(String(s.id), `/permissions ${ctx.match}`.trim());
     await ctx.reply(result?.response ?? "Use /permissions or /permissions reset.");
   });
-  const commandLabels = { mode: "Session mode", plan: "Preparing a plan", clear: "Clearing context", compact: "Summarizing context", init: "Inspecting the project", review: "Reviewing changes", cost: "Checking usage", doctor: "Checking connections" };
+  bot.command("compact", async ctx => {
+    const s = await session(ctx);
+    const result = await d.agent.commands.execute(s.id, "/compact");
+    if (result?.response) await ctx.reply(result.response);
+  });
+  const commandLabels = { mode: "Session mode", plan: "Preparing a plan", clear: "Clearing context", init: "Inspecting the project", review: "Reviewing changes", cost: "Checking usage", doctor: "Checking connections" };
   for (const [name, label] of Object.entries(commandLabels))
     bot.command(name, async ctx => {
       const s = await session(ctx);
       if (d.agent.running.has(String(s.id))) return ctx.reply("A task is still running. Use /stop first.");
       const rawPrompt = `/${name} ${ctx.match}`.trim();
-      const prompt = ["mode", "permissions", "model", "clear", "compact", "cost", "doctor"].includes(name)
+      const prompt = ["mode", "clear", "cost", "doctor"].includes(name)
         ? rawPrompt
         : telegramPrompt(ctx.message as TelegramPromptMessage).replace(/^\/[\w]+(?:@[\w]+)?/, `/${name}`);
       void animatedReply(ctx, () => d.agent.run(String(s.id), prompt), label).catch(() => {});

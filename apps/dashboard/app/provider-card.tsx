@@ -43,8 +43,7 @@ export default function ProviderCard({ provider, api, onEdit, onChanged }: { pro
         if (!details.open) return;
         const summary = details.querySelector("summary")!.getBoundingClientRect();
         const menu = details.querySelector<HTMLElement>(".provider-menu-items")!;
-        const dock = document.querySelector<HTMLElement>(".mobile-dock");
-        const bottom = dock?.getClientRects().length ? dock.getBoundingClientRect().top : window.visualViewport?.height ?? window.innerHeight;
+        const bottom = window.visualViewport?.height ?? window.innerHeight;
         const above = summary.top - (document.querySelector(".topbar")?.getBoundingClientRect().bottom ?? 0) - 10;
         const below = bottom - summary.bottom - 10;
         const side = above >= menu.scrollHeight ? "up" : below >= menu.scrollHeight ? "down" : above >= below ? "up" : "down";
