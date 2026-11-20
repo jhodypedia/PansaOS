@@ -27,6 +27,54 @@ async function files(root: string, base = ""): Promise<string[]> {
   }
   return out;
 }
+
+export type WorkspaceArtifact = { path: string; size: number };
+export type WorkspaceSnapshot = Map<string, string>;
+
+const artifactIgnoredDirectories = new Set([
+  ".git", "node_modules", ".next", ".home", ".local", ".cache",
+  ".venv", "venv", "__pycache__", ".pytest_cache", "coverage",
+]);
+const privateArtifact = /(^|\/)(?:\.env(?:\.[^/]*)?|\.npmrc|\.netrc|\.pypirc|[^/]*(?:secret|credential|token|private[-_.]?key)[^/]*|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|[^/]+\.(?:pem|p12|pfx|key))$/i;
+
+export async function workspaceSnapshot(root: string, limit = 5000): Promise<WorkspaceSnapshot> {
+  const snapshot: WorkspaceSnapshot = new Map();
+  let visited = 0;
+  const walk = async (directory: string, relative = "") => {
+    if (visited >= limit) return;
+    let entries;
+    try { entries = await fs.readdir(directory, { withFileTypes: true }); }
+    catch { return; }
+    for (const entry of entries) {
+      if (++visited > limit) break;
+      if (entry.isSymbolicLink()) continue;
+      const rel = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        if (!artifactIgnoredDirectories.has(entry.name)) await walk(path.join(directory, entry.name), rel);
+      } else if (entry.isFile() && !privateArtifact.test(rel)) {
+        try {
+          const stat = await fs.stat(path.join(directory, entry.name));
+          if (stat.size <= 20_000_000) snapshot.set(rel, `${stat.size}:${stat.mtimeMs}`);
+        } catch { /* File disappeared while the snapshot was being taken. */ }
+      }
+      if (visited >= limit) break;
+    }
+  };
+  await walk(root);
+  return snapshot;
+}
+
+export function changedWorkspaceArtifacts(before: WorkspaceSnapshot, after: WorkspaceSnapshot, limit = 12): WorkspaceArtifact[] {
+  const changed: (WorkspaceArtifact & { modified: number })[] = [];
+  for (const [file, fingerprint] of after) {
+    if (before.get(file) === fingerprint || privateArtifact.test(file)) continue;
+    const [rawSize, rawModified] = fingerprint.split(":");
+    const size = Number(rawSize), modified = Number(rawModified);
+    if (size <= 20_000_000) changed.push({ path: file, size, modified });
+  }
+  return changed.sort((a, b) => b.modified - a.modified).slice(0, limit).map(({ path: file, size }) => ({ path: file, size }));
+}
+
 export class Checkpoints {
   constructor(public sandbox: Sandbox) {}
   async list(session: string) {

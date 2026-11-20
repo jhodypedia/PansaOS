@@ -129,6 +129,7 @@ export async function routes(
   });
   app.get("/api/sessions/:id/files", async (req, reply) => {
     const { id } = req.params as { id: string };
+    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session not found" });
     let p: string;
     try {
       const root = await tools.sandbox.root(id);
@@ -153,12 +154,41 @@ export async function routes(
     };
   });
   app.post("/api/sessions/:id/upload", async (req) => {
-    const root = await tools.sandbox.root((req.params as { id: string }).id),
+    const id = (req.params as { id: string }).id;
+    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+    const root = await tools.sandbox.root(id),
       file = await req.file();
     if (!file) throw new Error("A file is required");
     const dest = await safePath(root, path.basename(file.filename));
     await fs.writeFile(dest, await file.toBuffer());
     return { path: path.basename(dest) };
+  });
+  app.get("/api/sessions/:id/files/download", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.get("SELECT id FROM sessions WHERE id=?", id)) return reply.code(404).send({ error: "Session not found" });
+    const query = req.query as { path?: string };
+    if (!query.path) return reply.code(400).send({ error: "A workspace path is required" });
+    let file: string;
+    try { file = await safePath(await tools.sandbox.root(id), query.path); }
+    catch { return reply.code(400).send({ error: "Paths outside the workspace are blocked" }); }
+    const stat = await fs.stat(file).catch(() => null);
+    if (!stat?.isFile()) return reply.code(404).send({ error: "File not found" });
+    if (stat.size > 20_000_000) return reply.code(413).send({ error: "File is too large (maximum 20 MB)" });
+    const filename = path.basename(file).replace(/[\r\n\u0000-\u001f\u007f]/g, "_");
+    const mediaTypes: Record<string, string> = {
+      ".pdf": "application/pdf", ".doc": "application/msword",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".ppt": "application/vnd.ms-powerpoint", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".csv": "text/csv; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
+      ".json": "application/json", ".zip": "application/zip", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+      ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml", ".mp3": "audio/mpeg", ".mp4": "video/mp4",
+    };
+    reply.header("Content-Type", mediaTypes[path.extname(filename).toLowerCase()] ?? "application/octet-stream");
+    reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    reply.header("Cache-Control", "no-store");
+    reply.header("X-Content-Type-Options", "nosniff");
+    return reply.send(await fs.readFile(file));
   });
   app.patch("/api/providers/:id", async (req) => {
     providers.update((req.params as { id: string }).id, req.body);
@@ -253,7 +283,7 @@ export async function routes(
         }).next().getTime();
         if (next <= Date.now()) {
           store.run("UPDATE schedules SET last_run=? WHERE id=?", Date.now(), String(s.id));
-          void agent.run(String(s.session_id), String(s.prompt)).then(result => tools.send(`Pengingat: ${result}`)).catch((e) => agent.fail(String(s.session_id), e));
+          void agent.run(String(s.session_id), String(s.prompt), 0, undefined, "schedule").then(result => tools.send(`Pengingat: ${result}`, undefined, String(s.session_id))).catch((e) => agent.fail(String(s.session_id), e));
           started++;
         }
       } catch (error) { store.event("error", String(s.session_id), { error: `Schedule ${s.id} failed: ${error instanceof Error ? error.message : "invalid cron expression"}` }); }

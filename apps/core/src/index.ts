@@ -293,7 +293,9 @@ app.get("/api/sessions", async () =>
 );
 app.post("/api/sessions", async (req) => {
   const body = req.body as { title?: string };
-  return store.session(body?.title ?? "Dashboard session");
+  const session = store.session(body?.title ?? "Dashboard session");
+  store.set(`session:${session.id}:channel`, req.headers.origin === config.PUBLIC_URL ? "browser" : "local");
+  return session;
 });
 app.get("/api/commands", async () => (await agent.commands.list()).map(({ name, description }) => ({ name, description })));
 const mcp = new MCP(tools);
@@ -330,7 +332,8 @@ app.post("/api/sessions/:id/message", async (req, reply) => {
   if (agent.running.has(id))
     return reply.code(409).send({ error: "A task is still running" });
   if (!body?.prompt) return reply.code(400).send({ error: "A prompt is required" });
-  void agent.run(id, body.prompt).catch((e) => agent.fail(id, e));
+  store.set(`session:${id}:channel`, "browser");
+  void agent.run(id, body.prompt, 0, undefined, "browser").catch((e) => agent.fail(id, e));
   return { accepted: true };
 });
 app.delete("/api/sessions/:id", async (req, reply) => {
@@ -454,7 +457,7 @@ if (config.SCHEDULER_MODE === "internal") {
           const next = CronExpressionParser.parse(String(schedule.cron), { currentDate: new Date(Number(schedule.last_run) || Date.now() - 60000) }).next().getTime();
           if (next > Date.now()) continue;
           store.run("UPDATE schedules SET last_run=? WHERE id=?", Date.now(), String(schedule.id));
-          void agent.run(String(schedule.session_id), String(schedule.prompt)).then((result) => tools.send(`Pengingat: ${result}`)).catch((error) => { agent.fail(String(schedule.session_id), error); });
+          void agent.run(String(schedule.session_id), String(schedule.prompt), 0, undefined, "schedule").then((result) => tools.send(`Pengingat: ${result}`, undefined, String(schedule.session_id))).catch((error) => { agent.fail(String(schedule.session_id), error); });
         } catch (error) { app.log.error({ id: schedule.id, error }, "schedule tick failed"); }
       }
       const day = new Date().toISOString().slice(0, 10);

@@ -18,6 +18,7 @@ import { config } from "./config.js";
 import { telegramMessages } from "./telegram-format.js";
 import { approvalCard, questionCard, resolvedQuestionCard } from "./telegram-cards.js";
 import { providerPresets } from "./provider-presets.js";
+import { shouldNotifyTelegram } from "./telegram-routing.js";
 const help = `**PANSA · YOUR PERSONAL ASSISTANT**\n\nSend a question, idea, or task. Let's get it done.\n\n**Conversation**\n/new — Start a new session\n/stop — Stop the current task\n/status — Check status\n/tasks — Active tasks\n\n**Knowledge**\n/memory query — Search memory\n/forget fact — Forget a memory\n/skills — Available skills\n\n**Workspace**\n/dashboard — Open dashboard\n/providers — Manage AI providers\n/model — Select a model\n/permissions — View or reset session permissions\n/autoapprove on|off — Manage automatic approvals\n\nYou can also send documents, photos, and voice messages.`;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const menuCommands = [
@@ -202,7 +203,8 @@ export async function startTelegram(d: Deps) {
     const index = all.findIndex((x) => String(x.id) === String(s.id));
     return { s, label: `Session #${index + 1}` };
   };
-  d.tools.send = async (text, file) => {
+  d.tools.send = async (text, file, sessionId) => {
+    if (sessionId && !shouldNotifyTelegram(d.agent.channelFor(sessionId))) return { ok: false, skipped: "Telegram delivery is disabled for browser-originated sessions" };
     for (const id of config.admins) {
       if (file)
         await bot.api.sendDocument(id, new InputFile(file), {
@@ -216,12 +218,13 @@ export async function startTelegram(d: Deps) {
   };
   d.store.bus.on("event", (e: LiveEvent) => {
     if (e.type === "progress" && e.data.kind === "question") {
+      if (e.session_id && !shouldNotifyTelegram(d.agent.channelFor(e.session_id))) return;
       const keyboard = new InlineKeyboard();
       for (const [index, option] of (e.data.options as { label: string }[]).entries()) keyboard.text(`${index + 1} · ${option.label}`, `answer:${e.data.id}:${index}`).row();
       const key = String(e.data.id);
-      questionMessages.set(key, config.admins.map(chat =>
-        bot.api.sendMessage(chat, questionCard(e.data), { reply_markup: keyboard })
-          .then(message => ({ chat, message: message.message_id }))
+      questionMessages.set(key, config.admins.map(chatId =>
+        bot.api.sendMessage(chatId, questionCard(e.data), { reply_markup: keyboard })
+          .then(message => ({ chat: chatId, message: message.message_id }))
           .catch(() => undefined),
       ));
     }
@@ -251,8 +254,9 @@ export async function startTelegram(d: Deps) {
       for (const message of approvalMessages.get(key) ?? []) void bot.api.deleteMessage(message.chat, message.message).catch(() => bot.api.editMessageReplyMarkup(message.chat, message.message, { reply_markup: new InlineKeyboard() }).catch(() => {}));
       approvalMessages.delete(key);
     }
-    if (e.type === "progress" && (e.data.kind === "todo" || (e.data.kind === "subagent" && e.data.status !== "running"))) void d.tools.send(String(e.data.text).slice(0, 1000)).catch(() => {});
+    if (e.type === "progress" && (e.data.kind === "todo" || (e.data.kind === "subagent" && e.data.status !== "running")) && e.session_id && shouldNotifyTelegram(d.agent.channelFor(e.session_id))) void d.tools.send(String(e.data.text).slice(0, 1000), undefined, e.session_id).catch(() => {});
     if (e.type === "approval") {
+      if (e.session_id && !shouldNotifyTelegram(d.agent.channelFor(e.session_id))) return;
       const key = String(e.data.id);
       approvalMessages.set(key, []);
       const keyboard = new InlineKeyboard()
@@ -273,18 +277,23 @@ export async function startTelegram(d: Deps) {
           .catch(() => {});
     }
     if (e.type === "switch") {
+      if (e.session_id && !shouldNotifyTelegram(d.agent.channelFor(e.session_id))) return;
       const from = e.data.fromName ?? providerName(e.data.from);
       const to = e.data.toName ?? providerName(e.data.to);
       void d.tools
-        .send(`🔀 Provider switch: ${String(from)} → ${String(to)}\n${e.data.reason}`)
+        .send(`🔀 Provider switch: ${String(from)} → ${String(to)}\n${e.data.reason}`, undefined, e.session_id ?? undefined)
         .catch(() => {});
     }
   });
-  const session = async (ctx: Context) =>
-    d.store.session(
+  const session = async (ctx: Context) => {
+    const current = d.store.session(
       `Telegram ${ctx.chat?.id ?? "unknown"}`,
       ctx.chat?.id ?? null,
     );
+    const key = `session:${current.id}:channel`;
+    if (ctx.chat?.id && d.store.setting(key) !== "browser") d.store.set(key, "telegram");
+    return current;
+  };
   bot.command("start", (ctx) => ctx.reply(help, { reply_markup: new InlineKeyboard()
     .text("Choose model", "menu:model").text("Status", "menu:status").row().text("Help", "menu:help") }));
   bot.command("help", async ctx => ctx.reply((await d.agent.commands.execute(String((await session(ctx)).id), "/help"))?.response ?? help));
@@ -307,7 +316,7 @@ export async function startTelegram(d: Deps) {
       const prompt = ["mode", "clear", "cost", "doctor"].includes(name)
         ? rawPrompt
         : telegramPrompt(ctx.message as TelegramPromptMessage).replace(/^\/[\w]+(?:@[\w]+)?/, `/${name}`);
-      void animatedReply(ctx, () => d.agent.run(String(s.id), prompt), label).catch(() => {});
+      void animatedReply(ctx, () => d.agent.run(String(s.id), prompt, 0, undefined, "telegram"), label).catch(() => {});
     });
   bot.callbackQuery(/^answer:/, async ctx => {
     const [, id, index] = ctx.callbackQuery.data.split(":");
@@ -618,7 +627,7 @@ export async function startTelegram(d: Deps) {
       }
       const caption = telegramPrompt(ctx.message as TelegramPromptMessage).trim();
       await ctx.reply(`File received: ${name}. I'll analyze its contents.`);
-      if (!d.agent.running.has(String(s.id))) void animatedReply(ctx, () => d.agent.run(String(s.id), `${caption ? `User instructions: ${caption}\n` : ""}Analyze attachment @${name} and provide a summary, key facts, and limitations. ${ctx.message.voice ? "If no audio transcription tool is available, explain the limitation without inventing a transcript." : ""}`), "ANALYZING FILE").catch(() => {});
+      if (!d.agent.running.has(String(s.id))) void animatedReply(ctx, () => d.agent.run(String(s.id), `${caption ? `User instructions: ${caption}\n` : ""}Analyze attachment @${name} and provide a summary, key facts, and limitations. ${ctx.message.voice ? "If no audio transcription tool is available, explain the limitation without inventing a transcript." : ""}`, 0, undefined, "telegram"), "ANALYZING FILE").catch(() => {});
       else await ctx.reply("A task is running. Your file was saved and has not been analyzed yet.");
     },
   );
@@ -807,8 +816,8 @@ export async function startTelegram(d: Deps) {
       await settle();
       await typeOut(ctx, wait, result);
     };
-    void d.agent
-      .run(String(s.id), prompt)
+      void d.agent
+      .run(String(s.id), prompt, 0, undefined, "telegram")
       .then(async (result) => {
         clearInterval(animationTimer);
         d.store.bus.off("event", listener);

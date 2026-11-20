@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { enforceMode, structuredCompaction, COMPACTION_SECTIONS, TodoSchema } from "./session-state.js";
-import { applyEdits, Checkpoints } from "./workspace.js";
+import { applyEdits, changedWorkspaceArtifacts, Checkpoints, workspaceSnapshot } from "./workspace.js";
 import type { Sandbox } from "./sandbox.js";
 import { randomUUID } from "node:crypto";
 
@@ -67,6 +67,25 @@ describe("atomic multi-edit", () => {
       expect(await readFile(file, "utf8")).toBe(original);
       expect(applyEdits(original, [{ old: "a = 1", replacement: "a = 3" }])).toContain("a = 3");
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+describe("deliverable file discovery", () => {
+  it("lists created and changed files while omitting secret files and generated directories", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pansa-artifacts-"));
+    try {
+      await writeFile(path.join(root, "notes.md"), "before");
+      await writeFile(path.join(root, ".env"), "PRIVATE=secret");
+      await writeFile(path.join(root, "credentials.json"), "secret");
+      await mkdir(path.join(root, "node_modules"));
+      await writeFile(path.join(root, "node_modules", "dependency.js"), "keep");
+      const before = await workspaceSnapshot(root);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await writeFile(path.join(root, "notes.md"), "after");
+      await writeFile(path.join(root, "report.pdf"), Buffer.from("%PDF-1.7"));
+      await writeFile(path.join(root, "id_rsa"), "private");
+      const after = await workspaceSnapshot(root);
+      expect(changedWorkspaceArtifacts(before, after).map(file => file.path)).toEqual(["notes.md", "report.pdf"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
 describe("structured compaction", () => {

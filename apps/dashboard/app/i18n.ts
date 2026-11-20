@@ -15,6 +15,9 @@ export const dictionaries = {
     send: "Kirim tugas",
     empty: "Belum ada data. Mulai task untuk melihat aktivitas nyata.",
     login: "Masuk ke ruang kendali",
+    createdFiles: "Berkas yang dibuat",
+    download: "Unduh",
+    open: "Buka",
   },
   en: {
     overview: "Overview",
@@ -32,5 +35,8 @@ export const dictionaries = {
     send: "Send task",
     empty: "No data yet. Start a task to see real activity.",
     login: "Enter mission control",
+    createdFiles: "Created files",
+    download: "Download",
+    open: "Open",
   },
 };

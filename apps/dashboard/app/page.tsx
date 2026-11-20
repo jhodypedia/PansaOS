@@ -161,6 +161,8 @@ function Rich({ text }: { text: string }) {
     img: ({ alt }) => <span className="muted">{alt || "Image"}</span>,
   }}>{text}</ReactMarkdown></div>;
 }
+const binaryFile = (name: string) => /\.(?:pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar|gz|7z|rar|png|jpe?g|gif|webp|bmp|ico|mp[34]|wav|ogg|webm|woff2?|ttf|otf|sqlite|db)$/i.test(name);
+const fileSize = (size: number) => size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1048576).toFixed(1)} MB`;
 function ActionBlock({
   e,
   onOpen,
@@ -745,6 +747,9 @@ export default function Dashboard() {
     window.localStorage.setItem("pansa-theme", theme);
   }, [theme]);
   useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setNavOpen(false);
     };
@@ -1280,8 +1285,22 @@ export default function Dashboard() {
     const payload = data(item.e);
     return item.type === "message" && ["user", "assistant"].includes(String(payload.role)) && String(payload.content ?? "").trim();
   }), [timeline, data]);
+  const taskArtifacts = useMemo(() => {
+    const byPath = new Map<string, { path: string; size: number; key: string }>();
+    for (const item of timeline) {
+      if (item.type !== "task" || data(item.e).status !== "done") continue;
+      const artifacts = data(item.e).artifacts;
+      if (!Array.isArray(artifacts)) continue;
+      for (const value of artifacts) {
+        const file = value as Row;
+        if (typeof file.path === "string" && typeof file.size === "number")
+          byPath.set(file.path, { path: file.path, size: file.size, key: item.key });
+      }
+    }
+    return [...byPath.values()].slice(-12);
+  }, [timeline, data]);
   const conversationVersion = conversation.map(item => item.key).join(",");
-  const scrollVersion = view === "chat" ? conversationVersion : timeline.map(item => `${item.key}:${data(item.e).status ?? ""}`).join(",");
+  const scrollVersion = view === "chat" ? `${conversationVersion}:${taskArtifacts.map(file => `${file.key}:${file.path}`).join(",")}` : timeline.map(item => `${item.key}:${data(item.e).status ?? ""}`).join(",");
   const sessionApprovals = approvals.filter(item => item.session_id === session);
   const sessionQuestions = sessionState.questions as Row[] ?? [];
   const lastTask = events.find(event => event.session_id === session && event.type === "task");
@@ -1493,7 +1512,7 @@ export default function Dashboard() {
             onChange={(e) => setToken(e.target.value)}
             required
           />
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn primary" disabled={busy}>
             {busy ? <><Loader2 size={15} className="spin" /> Connecting…</> : <>Open workspace <ArrowRight size={15} /></>}
           </button>
@@ -1506,8 +1525,8 @@ export default function Dashboard() {
       <a href="#workspace-content" className="skip-link">Skip to content</a>
       <div className="ambient-light" aria-hidden="true" />
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
-      <aside className="sidebar" ref={sidebarRef} inert={mobileViewport && !navOpen} role={mobileViewport && navOpen ? "dialog" : undefined} aria-modal={mobileViewport && navOpen ? true : undefined} aria-label="Navigation workspace">
-        <a className="brand" href="#" onClick={() => setTab("overview")}>
+      <aside id="workspace-sidebar" className="sidebar" ref={sidebarRef} inert={mobileViewport && !navOpen} role={mobileViewport && navOpen ? "dialog" : undefined} aria-modal={mobileViewport && navOpen ? true : undefined} aria-label="Navigation workspace">
+        <button type="button" className="brand" aria-label="Go to overview" onClick={() => { setTab("overview"); setNavOpen(false); }}>
           <span className="brand-icon">
             <Command size={22} />
           </span>
@@ -1517,12 +1536,13 @@ export default function Dashboard() {
               v1.0
             </span>
           </span>
-        </a>
+        </button>
         <div className="nav-label">WORKSPACE</div>
         <nav className="nav">
           {tabs.slice(0, 7).map(([key, Icon]) => (
             <button
               key={key}
+              aria-current={tab === key ? "page" : undefined}
               onClick={() => {
                 setTab(key);
                 setNavOpen(false);
@@ -1538,6 +1558,7 @@ export default function Dashboard() {
           {tabs.slice(7, 10).map(([key, Icon]) => (
             <button
               key={key}
+              aria-current={tab === key ? "page" : undefined}
               onClick={() => {
                 setTab(key);
                 setNavOpen(false);
@@ -1550,6 +1571,7 @@ export default function Dashboard() {
           ))}
           <div className="nav-label">SYSTEM</div>
           <button
+            aria-current={tab === "settings" ? "page" : undefined}
             onClick={() => {
               setTab("settings");
               setNavOpen(false);
@@ -1574,7 +1596,9 @@ export default function Dashboard() {
           </div>
           <div className="flex justify-between items-center pt-5 text-[10px] muted">
             <span>
-              Documentation <ExternalLink size={10} className="inline ml-1" />
+              <a className="sidebar-doc-link" href="https://github.com/jhodypedia/PansaOS#readme" target="_blank" rel="noreferrer">
+                Documentation <ExternalLink size={10} className="inline ml-1" />
+              </a>
             </span>
             <button
               aria-label="Sign out"
@@ -1594,6 +1618,8 @@ export default function Dashboard() {
           <button
             className="icon-btn menu"
             aria-label="Open menu"
+            aria-expanded={navOpen}
+            aria-controls="workspace-sidebar"
             onClick={() => setNavOpen(true)}
           >
             <Menu size={17} />
@@ -1610,14 +1636,15 @@ export default function Dashboard() {
             <span className="keycap">SELF-HOSTED</span>
             <button
               className="icon-btn theme"
-              aria-label={theme === "dark" ? "Light mode" : "Dark mode"}
+              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              aria-pressed={theme === "dark"}
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
             >
               {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
             </button>
             <button
               className="icon-btn theme"
-              aria-label="Notifications"
+              aria-label="View live activity"
               onClick={() => setTab("live")}
             >
               <Bell size={15} />
@@ -2314,6 +2341,27 @@ export default function Dashboard() {
                               </div>
                             );
                           })}
+                      {view === "chat" && taskArtifacts.length > 0 && (
+                        <section className="chat-artifacts" aria-label="Files created by Pansa">
+                          <div className="chat-artifacts-heading"><FileText size={14} /> {t.createdFiles}</div>
+                          <div className="chat-artifacts-list">
+                            {taskArtifacts.map((file) => (
+                              <a
+                                key={`${file.key}:${file.path}`}
+                                className="chat-artifact"
+                                href={`/api/sessions/${encodeURIComponent(session)}/files/download?path=${encodeURIComponent(file.path)}`}
+                                download
+                                aria-label={`Download ${file.path}`}
+                              >
+                                <FileText size={15} />
+                                <span>{file.path}</span>
+                                <small>{fileSize(file.size)}</small>
+                                <Download size={14} />
+                              </a>
+                            ))}
+                          </div>
+                        </section>
+                      )}
                       {view === "console" && stream && (
                         <div className="bubble streaming">
                           <span className="bubble-role">streaming</span>
@@ -2538,21 +2586,15 @@ export default function Dashboard() {
                               {f.directory ? "📁" : "📄"} {f.name}
                             </h3>
                           </div>
-                          <button
-                            className="btn"
-                            onClick={() => {
-                              const next =
-                                filePath === "."
-                                  ? f.name
-                                  : `${filePath}/${f.name}`;
-                              setFilePath(next);
-                              void loadFiles(next).catch((e) =>
-                                setError(String(e)),
-                              );
-                            }}
-                          >
-                            Open
-                          </button>
+                          {(() => {
+                            const next = filePath === "." ? f.name : `${filePath}/${f.name}`;
+                            return <div className="flex gap-2">
+                              {f.directory || !binaryFile(f.name) ? (
+                                <button className="btn" onClick={() => { setFilePath(next); void loadFiles(next).catch((e) => setError(String(e))); }}>{t.open}</button>
+                              ) : null}
+                              {!f.directory && <a className="btn" href={`/api/sessions/${encodeURIComponent(filesSession)}/files/download?path=${encodeURIComponent(next)}`} download>{t.download} <Download size={12} /></a>}
+                            </div>;
+                          })()}
                         </div>
                       ))}
                       {!files.length && <div className="empty">{t.empty}</div>}

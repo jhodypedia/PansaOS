@@ -71,6 +71,7 @@ export interface ToolContext {
   session: string;
   signal: AbortSignal;
   depth: number;
+  channel?: "browser" | "telegram" | "schedule" | "local";
   subtype?: "explore" | "plan" | "general";
 }
 export interface Tool {
@@ -110,7 +111,7 @@ export class Tools {
     async () => {
       throw new Error("Agent is not ready");
     };
-  send: (text: string, file?: string) => Promise<unknown> = async () => {
+  send: (text: string, file?: string, session?: string) => Promise<unknown> = async () => {
     throw new Error("Telegram is not configured");
   };
   constructor(
@@ -837,17 +838,18 @@ export class Tools {
     );
     add(
       "telegram_send",
-      "Send message or workspace file to configured admins.",
+      "Send a message or workspace file to Telegram admins only when this task was initiated in Telegram. Browser-originated tasks do not send Telegram notifications.",
       z.object({ text: s, path: s.optional() }),
       async (a, c) =>
         this.send(
           String(a.text),
           a.path ? await resolve(c, a.path) : undefined,
+          c.session,
         ),
       true,
     );
-    add("notify", "Notify Telegram admins.", z.object({ text: s }), async (a) =>
-      this.send(String(a.text)),
+    add("notify", "Notify Telegram admins only for Telegram-originated tasks. Browser-originated tasks do not send Telegram notifications.", z.object({ text: s }), async (a, c) =>
+      this.send(String(a.text), undefined, c.session),
     );
     add(
       "spawn_task",
