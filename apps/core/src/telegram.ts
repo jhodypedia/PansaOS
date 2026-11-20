@@ -20,6 +20,18 @@ import { approvalCard, questionCard, resolvedQuestionCard } from "./telegram-car
 import { providerPresets } from "./provider-presets.js";
 const help = `**PANSA · YOUR PERSONAL ASSISTANT**\n\nSend a question, idea, or task. Let's get it done.\n\n**Conversation**\n/new — Start a new session\n/stop — Stop the current task\n/status — Check status\n/tasks — Active tasks\n\n**Knowledge**\n/memory query — Search memory\n/forget fact — Forget a memory\n/skills — Available skills\n\n**Workspace**\n/dashboard — Open dashboard\n/providers — Manage AI providers\n/model — Select a model\n/permissions — View or reset session permissions\n/autoapprove on|off — Manage automatic approvals\n\nYou can also send documents, photos, and voice messages.`;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const menuCommands = [
+  { command: "start", description: "Open the Pansa command center" },
+  { command: "model", description: "Choose a model for this session" },
+  { command: "new", description: "Start a new conversation" },
+  { command: "status", description: "See task status and model preference" },
+  { command: "stop", description: "Stop the current task" },
+  { command: "providers", description: "Manage model connections" },
+  { command: "dashboard", description: "Open the web dashboard" },
+  { command: "plan", description: "Create a read-only plan" },
+  { command: "permissions", description: "View or reset session permissions" },
+  { command: "help", description: "Browse available commands" },
+];
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const barText = (frame: number, done: boolean) => {
   const width = 18;
@@ -124,7 +136,7 @@ export async function startTelegram(d: Deps) {
   const wizard = new Map<number, string[]>();
   const wizardAdapters = new Map<number, "openai" | "responses" | "anthropic">();
   const wizardModels = new Map<number, string>();
-  const questionMessages = new Map<string, { chat: number; message: number }[]>();
+  const questionMessages = new Map<string, Promise<{ chat: number; message: number } | undefined>[]>();
   const approvalMessages = new Map<string, { chat: number; message: number }[]>();
   const formattedEdit = async (ctx: Context, messageId: number, text: string, entities: MessageEntity[]) => {
     try {
@@ -146,7 +158,8 @@ export async function startTelegram(d: Deps) {
   };
   const animatedReply = async (ctx: Context, task: () => Promise<string>, label = "WORKING") => {
     const startedAt = Date.now();
-    const msg = await ctx.reply(`${SPIN[0]} PANSA · ${label}\n${barText(0, false)}  ·  IN PROGRESS`);
+    const progress = (frame: number) => `**${SPIN[frame % SPIN.length]} Pansa · ${label}**\n${barText(frame, false)}  ·  ${clockFrom(startedAt)}`;
+    const msg = await ctx.reply(progress(0));
     let frame = 0,
       done = false,
       busy = false;
@@ -156,17 +169,16 @@ export async function startTelegram(d: Deps) {
       if (busy) return;
       busy = true;
       ctx.api
-        .editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[frame % SPIN.length]} PANSA · ${label}\n${barText(frame, false)}  ·  IN PROGRESS · ${clockFrom(startedAt)}`)
+        .editMessageText(ctx.chat!.id, msg.message_id, progress(frame))
         .catch(() => {})
         .finally(() => (busy = false));
-    }, 1000);
+    }, 1500);
     timer.unref?.();
     try {
       const result = await task();
       done = true;
       clearInterval(timer);
       while (busy) await sleep(30);
-      await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, `${SPIN[9]} PANSA · DONE\n${barText(0, true)} 100%  ·  ${clockFrom(startedAt)}`).catch(() => {});
       await typeOut(ctx, msg, result);
       return result;
     } catch (e) {
@@ -207,17 +219,32 @@ export async function startTelegram(d: Deps) {
       const keyboard = new InlineKeyboard();
       for (const [index, option] of (e.data.options as { label: string }[]).entries()) keyboard.text(`${index + 1} · ${option.label}`, `answer:${e.data.id}:${index}`).row();
       const key = String(e.data.id);
-      questionMessages.set(key, []);
-      for (const id of config.admins) void bot.api.sendMessage(id, questionCard(e.data), { reply_markup: keyboard }).then(async message => {
-        if (!d.tools.questions.has(key)) { await bot.api.editMessageReplyMarkup(id, message.message_id, { reply_markup: new InlineKeyboard() }); return; }
-        questionMessages.get(key)?.push({ chat: id, message: message.message_id });
-      }).catch(() => {});
+      questionMessages.set(key, config.admins.map(chat =>
+        bot.api.sendMessage(chat, questionCard(e.data), { reply_markup: keyboard })
+          .then(message => ({ chat, message: message.message_id }))
+          .catch(() => undefined),
+      ));
     }
     if (e.type === "progress" && e.data.kind === "question_resolved") {
       const key = String(e.data.id);
-      const card = telegramMessages(resolvedQuestionCard(e.data))[0]!;
-      for (const message of questionMessages.get(key) ?? []) void bot.api.editMessageText(message.chat, message.message, card.text, { entities: card.entities, reply_markup: new InlineKeyboard() }).catch(() => {});
+      const deliveries = questionMessages.get(key) ?? [];
       questionMessages.delete(key);
+      for (const delivery of deliveries) void delivery.then(async sent => {
+        if (!sent) return;
+        if (e.data.status === "answered") {
+          try {
+            await bot.api.deleteMessage(sent.chat, sent.message);
+            return;
+          } catch {
+            // Close the card visibly if Telegram cannot delete it.
+          }
+        }
+        const card = telegramMessages(resolvedQuestionCard(e.data))[0]!;
+        await bot.api.editMessageText(sent.chat, sent.message, card.text, {
+          entities: card.entities,
+          reply_markup: new InlineKeyboard(),
+        });
+      }).catch(() => {});
     }
     if (e.type === "audit" && (e.data.action === "approval" || e.data.action === "approval_closed")) {
       const key = String(e.data.id);
@@ -258,14 +285,16 @@ export async function startTelegram(d: Deps) {
       `Telegram ${ctx.chat?.id ?? "unknown"}`,
       ctx.chat?.id ?? null,
     );
-  bot.command("start", (ctx) => ctx.reply(help));
+  bot.command("start", (ctx) => ctx.reply(help, { reply_markup: new InlineKeyboard()
+    .text("Choose model", "menu:model").text("Status", "menu:status").row().text("Help", "menu:help") }));
   bot.command("help", async ctx => ctx.reply((await d.agent.commands.execute(String((await session(ctx)).id), "/help"))?.response ?? help));
   bot.command("permissions", async ctx => {
     const s = await session(ctx);
     const result = await d.agent.commands.execute(String(s.id), `/permissions ${ctx.match}`.trim());
     await ctx.reply(result?.response ?? "Use /permissions or /permissions reset.");
   });
-  for (const name of ["mode", "plan", "clear", "compact", "init", "review", "model", "cost", "doctor"])
+  const commandLabels = { mode: "Session mode", plan: "Preparing a plan", clear: "Clearing context", compact: "Summarizing context", init: "Inspecting the project", review: "Reviewing changes", cost: "Checking usage", doctor: "Checking connections" };
+  for (const [name, label] of Object.entries(commandLabels))
     bot.command(name, async ctx => {
       const s = await session(ctx);
       if (d.agent.running.has(String(s.id))) return ctx.reply("A task is still running. Use /stop first.");
@@ -273,7 +302,7 @@ export async function startTelegram(d: Deps) {
       const prompt = ["mode", "permissions", "model", "clear", "compact", "cost", "doctor"].includes(name)
         ? rawPrompt
         : telegramPrompt(ctx.message as TelegramPromptMessage).replace(/^\/[\w]+(?:@[\w]+)?/, `/${name}`);
-      void animatedReply(ctx, () => d.agent.run(String(s.id), prompt), `/${name.toUpperCase()}`).catch(() => {});
+      void animatedReply(ctx, () => d.agent.run(String(s.id), prompt), label).catch(() => {});
     });
   bot.callbackQuery(/^answer:/, async ctx => {
     const [, id, index] = ctx.callbackQuery.data.split(":");
@@ -309,16 +338,16 @@ export async function startTelegram(d: Deps) {
         : "Task stopped.",
     );
   });
-  bot.command("status", async (ctx) => {
+  const showStatus = async (ctx: Context) => {
     const { s, label } = await sessionLabel(ctx);
     const active = d.providers
       .list()
       .filter((p) => p.enabled)
       .map((p) => p.name);
-    await ctx.reply(
-      `**${label}**\nStatus: ${d.agent.running.has(String(s.id)) ? "working" : "idle"}\nActive providers: ${active.join(", ") || "none"}`,
-    );
-  });
+    const preferred = d.providers.list().find(provider => provider.id === s.pinned && provider.enabled);
+    await ctx.reply(`**${label}**\nStatus: ${d.agent.running.has(String(s.id)) ? "working" : "idle"}\nPreferred model: ${preferred ? `${preferred.name} · ${preferred.model}` : "Automatic"}\nActive providers: ${active.join(", ") || "none"}`);
+  };
+  bot.command("status", showStatus);
   const providerKeyboard = (pinned?: unknown) => {
     const list = d.providers.list();
     const keyboard = new InlineKeyboard();
@@ -330,7 +359,7 @@ export async function startTelegram(d: Deps) {
           `provider:pin:${p.id}`,
         )
         .row()
-        .text("🧪 Tes", `provider:test:${p.id}`)
+        .text("🧪 Test", `provider:test:${p.id}`)
         .text(p.enabled ? "⏸ Disable" : "▶ Enable", `provider:toggle:${p.id}`)
         .text("🗑", `provider:del:${p.id}`)
         .row();
@@ -385,24 +414,49 @@ export async function startTelegram(d: Deps) {
     wizard.delete(user); wizardAdapters.delete(user); wizardModels.delete(user);
     await ctx.reply("Provider setup cancelled.");
   });
+  const modelPicker = (pinned: unknown) => {
+    const providers = d.providers.list().filter(provider => provider.enabled);
+    const selected = providers.find(provider => provider.id === pinned);
+    const keyboard = new InlineKeyboard().text(selected ? "Automatic" : "✓ Automatic", "model:pick:auto").row();
+    for (const provider of providers.slice(0, 90)) {
+      keyboard.text(`${provider.id === selected?.id ? "✓ " : ""}${provider.name} · ${provider.model}`.slice(0, 58), `model:pick:${provider.id}`).row();
+    }
+    const text = `**Choose a model**\n\nPreferred for the next task in this session: ${selected ? `${selected.name} · ${selected.model}` : "Automatic"}.\n\n${providers.length ? "Pick a connection below. Pansa can fall back if it is unavailable." : "Add or enable a connection in /providers first."}`;
+    return { text, keyboard };
+  };
+  const showModel = async (ctx: Context) => {
+    const { text, keyboard } = modelPicker((await session(ctx)).pinned);
+    await ctx.reply(text, { reply_markup: keyboard });
+  };
+  bot.callbackQuery(/^menu:(model|status|help)$/, async ctx => {
+    await ctx.answerCallbackQuery();
+    if (ctx.match[1] === "model") await showModel(ctx);
+    else if (ctx.match[1] === "status") await showStatus(ctx);
+    else await ctx.reply(help);
+  });
+  bot.callbackQuery(/^model:pick:(.+)$/, async ctx => {
+    const key = ctx.match[1]!;
+    try {
+      const selected = d.providers.selectForSession((await session(ctx)).id, key === "auto" ? null : key);
+      await ctx.answerCallbackQuery(selected.pinned ? "Model preference saved" : "Automatic selection enabled");
+      const { text, keyboard } = modelPicker(selected.pinned);
+      await ctx.editMessageText(text, { reply_markup: keyboard }).catch(() => {});
+    } catch (error) {
+      await ctx.answerCallbackQuery(error instanceof Error ? error.message.slice(0, 180) : "Could not select model");
+    }
+  });
   bot.command("model", async (ctx) => {
-    const s = await session(ctx);
     const query = ctx.match.trim();
     if (!query) {
-      await ctx.reply("Choose a provider to pin:", {
-        reply_markup: providerKeyboard(s.pinned),
-      });
-      return;
+      return showModel(ctx);
     }
-    const p = d.providers
-      .list()
-      .find((x) => x.id === query || x.model === query);
-    if (!p)
-      return ctx.reply("Provider or model not found. Use /providers.");
-    d.store.run("UPDATE sessions SET pinned=? WHERE id=?", String(p.id), s.id);
-    return ctx.reply(
-      `Model pinned: ${p.name} · ${p.model}. Automatic failover remains available.`,
-    );
+    try {
+      const selected = d.providers.selectForSession((await session(ctx)).id, query.toLowerCase() === "auto" ? null : query);
+      const { text, keyboard } = modelPicker(selected.pinned);
+      return ctx.reply(text, { reply_markup: keyboard });
+    } catch (error) {
+      return ctx.reply(`${error instanceof Error ? error.message : "Could not select model"}\nUse /model to open the picker.`);
+    }
   });
   bot.command("skills", async (ctx) =>
     ctx.reply(
@@ -636,19 +690,16 @@ export async function startTelegram(d: Deps) {
       void ctx.api.sendChatAction(ctx.chat.id, "typing").catch(() => {});
     typing();
     const typingTimer = setInterval(typing, 4000);
-    let text = "",
-      thought = "",
+    let writing = false,
       last = 0,
       current = "Preparing your personal context",
       frame = 0,
       busy = false,
       dirty = true,
       finished = false,
-      finishedStatus = "",
-      revealed = 0;
+      finishedStatus = "";
     let waitingFor: { kind: "approval" | "question"; id: string } | null = null;
     const steps: string[] = [];
-    const SHOW = 3000;
     const render = () => {
       const u = d.agent.sessionUsage(String(s.id));
       const secs = Math.max(0, (Date.now() - startedAt) / 1000);
@@ -656,7 +707,7 @@ export async function startTelegram(d: Deps) {
         ? finishedStatus === "done" ? "DONE" : "FAILED"
         : waitingFor
           ? "WAITING FOR YOU"
-        : text.length > 0
+        : writing
           ? "WRITING A RESPONSE"
           : steps.length
             ? "PROCESSING RESULTS"
@@ -678,11 +729,7 @@ export async function startTelegram(d: Deps) {
         : current
           ? `\n${current}`
           : "";
-      const history = steps.length ? `\n\n${steps.slice(-4).join("\n")}` : "";
-      const preview = (finished ? text.slice(0, revealed) : text || thought).trim();
-      const cursor = finished && revealed < Math.min(text.length, SHOW) ? "▍" : preview && !finished && frame % 2 ? "▍" : "";
-      const content = preview ? `\n\n${preview.slice(0, SHOW)}${cursor}` : "";
-      const body = `${title}\n${bar} · ${pct}\n${meta}${activity}${history}${content}`;
+      const body = `**${title}**\n${bar} · ${finished ? "Closed" : waitingFor ? "Paused" : pct.trim()}\n${meta}${activity}`;
       return body.slice(0, 3900);
     };
     const flush = async (force = false) => {
@@ -715,16 +762,14 @@ export async function startTelegram(d: Deps) {
       } else if (e.type === "progress" && e.data.kind === "question_resolved") {
         waitingFor = null; current = "Continuing with your choice";
       } else if (e.type === "token") {
-        text += String(e.data.text ?? "");
+        writing = true;
         current = "✍️ Composing your response";
       }
       else if (e.type === "tool") {
-        if (text.trim()) thought = text.trim();
-        text = "";
-        const name = String(e.data.name ?? e.data.tool ?? "alat");
-        const command = e.data.command ? ` · ${String(e.data.command).slice(0, 100)}` : "";
-        const cmd = `${name}${command}`;
-        if (e.data.status === "running") current = `⚙️ Running ${cmd}`;
+        writing = false;
+        const name = String(e.data.name ?? e.data.tool ?? "tool");
+        const activityLabels: Record<string, string> = { web_fetch: "Reading a web page", web_search: "Searching the web", http_request: "Fetching web data", bash: "Running a command", run_python: "Analyzing data", read_file: "Reading a file" };
+        if (e.data.status === "running") current = `⚙️ ${activityLabels[name] ?? `Running ${name.replace(/_/g, " ")}`}`;
         else {
           const secs = Number(e.data.durationMs ?? 0);
           const exit = e.data.exitCode;
@@ -751,7 +796,7 @@ export async function startTelegram(d: Deps) {
     const animationTimer = setInterval(() => {
       frame++;
       if (dirty || Date.now() - last > 1600) void flush();
-    }, 1150);
+    }, 1500);
     animationTimer.unref?.();
     const reveal = async (result: string) => {
       await settle();
@@ -764,17 +809,16 @@ export async function startTelegram(d: Deps) {
         d.store.bus.off("event", listener);
         finished = true;
         finishedStatus = "done";
-        thought = "";
         current = "";
         void ctx.react("🎉").catch(() => {});
-        text = result;
         await reveal(result);
       })
       .catch(async (e) => {
         finished = true;
         finishedStatus = "error";
         current = e instanceof Error ? e.message : "Task failed";
-        text = "";
+        clearInterval(animationTimer);
+        writing = false;
         void ctx.react("😢").catch(() => {});
         await settle();
         await flush(true);
@@ -793,12 +837,9 @@ export async function startTelegram(d: Deps) {
     const name = String(provider.name);
     if (action === "pin") {
       const s = await session(ctx);
-      d.store.run(
-        "UPDATE sessions SET pinned=? WHERE id=?",
-        String(provider.id),
-        s.id,
-      );
-      await ctx.answerCallbackQuery(`Dikunci ke ${name}`);
+      if (!provider.enabled) return ctx.answerCallbackQuery("Enable this connection first");
+      d.providers.selectForSession(s.id, String(provider.id));
+      await ctx.answerCallbackQuery("Model preference saved for the next task");
       return ctx.editMessageReplyMarkup({
         reply_markup: providerKeyboard(provider.id),
       });
@@ -866,6 +907,9 @@ export async function startTelegram(d: Deps) {
   bot.catch((err) =>
     d.store.event("error", null, { error: String(err.error) }),
   );
+  void bot.api.setMyCommands(menuCommands).catch(() => {
+    d.store.event("health", null, { telegram: "command_menu_update_failed" });
+  });
   const webhook =
     config.TELEGRAM_MODE === "webhook" ||
     (config.TELEGRAM_MODE === "auto" && config.PUBLIC_URL.startsWith("https:"));

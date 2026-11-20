@@ -62,9 +62,8 @@ export class Commands {
     if (name === "model") {
       const list = providers.list();
       if (rest) {
-        const found = list.find(p => p.id === rest || p.name === rest || p.model === rest);
-        if (!found) return { response: "Model not found. Use an ID from /model." };
-        store.run("UPDATE sessions SET pinned=? WHERE id=?", String(found.id), session);
+        const selected = providers.selectForSession(session, rest.toLowerCase() === "auto" ? null : rest);
+        return { response: selected.pinned ? `Preferred for the next task: ${selected.provider} · ${selected.model}. Automatic failover is available.` : "Automatic model selection enabled for this session." };
       }
       return { response: list.map(p => `${p.id} · ${p.name} / ${p.model}${String(store.get("SELECT pinned FROM sessions WHERE id=?", session)?.pinned) === p.id ? " · active" : ""}`).join("\n") || "No providers yet. Add a connection in Providers." };
     }

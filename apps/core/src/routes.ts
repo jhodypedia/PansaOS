@@ -108,6 +108,10 @@ export async function routes(
     );
     return { ok: true };
   });
+  app.put("/api/sessions/:id/model", async req => {
+    const { provider } = z.object({ provider: z.string().trim().min(1).max(200).nullable() }).parse(req.body);
+    return providers.selectForSession((req.params as { id: string }).id, provider);
+  });
   app.put("/api/sessions/:id/workspace", async (req, reply) => {
     const id = (req.params as { id: string }).id;
     if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip) || req.headers.origin)

@@ -8,6 +8,26 @@ const draft = { name: "Test", base_url: "https://models.example/v1/", api_key: "
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("provider connection settings", () => {
+  it("uses a selected model first, even when another provider matches the preferred capability", async () => {
+    const store = new Store(":memory:");
+    try {
+      const providers = new Providers(store, key);
+      const fallback = providers.save({ ...draft, name: "Fallback", capabilities: ["tools"] });
+      const preferred = providers.save({ ...draft, name: "Preferred", model: "preferred-model", priority: 10 });
+      const disabled = providers.save({ ...draft, name: "Disabled", enabled: false });
+      const session = store.session().id;
+      const selected = providers.selectForSession(session, "preferred");
+      expect(selected.pinned).toBe(preferred);
+      expect(() => providers.selectForSession(session, disabled)).toThrow("enabled provider");
+      expect(store.get("SELECT pinned FROM sessions WHERE id=?", session)?.pinned).toBe(preferred);
+      const request = vi.spyOn(providers, "request").mockResolvedValue({ text: "A complete answer", calls: [], tokens: 10 });
+      await providers.complete([], [], session, AbortSignal.timeout(1000), () => {}, selected.pinned!, false, "tools");
+      expect(request.mock.calls[0]![0].id).toBe(preferred);
+      expect(providers.selectForSession(session, null).pinned).toBeNull();
+      await providers.complete([], [], session, AbortSignal.timeout(1000), () => {}, undefined, false, "tools");
+      expect(request.mock.calls[1]![0].id).toBe(fallback);
+    } finally { store.db.close(); }
+  });
   it("rejects header injection, transport overrides, and case-insensitive duplicates", () => {
     for (const custom_headers of [{ "Bad\r\nName": "value" }, { "X-Key": "secret\r\nInjected: true" }, { Host: "other.example" }, { "Content-Length": "5" }, { Authorization: "one", authorization: "two" }])
       expect(() => providerSchema.parse({ ...draft, custom_headers })).toThrow();

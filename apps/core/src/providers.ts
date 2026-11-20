@@ -137,6 +137,27 @@ export class Providers {
         configured_headers: Object.keys(this.customHeaders(p)),
       }; });
   }
+  selectForSession(session: string, selection: string | null) {
+    if (!this.store.get("SELECT id FROM sessions WHERE id=?", session))
+      throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+    let provider: Row | undefined;
+    if (selection !== null) {
+      const list = this.list();
+      provider = list.find(row => row.id === selection);
+      if (!provider) {
+        const matches = list.filter(row => row.model === selection || String(row.name).toLowerCase() === selection.toLowerCase());
+        if (matches.length > 1)
+          throw Object.assign(new Error("Multiple connections match. Select a specific provider from the picker."), { statusCode: 400 });
+        provider = matches[0];
+      }
+      if (!provider || !provider.enabled)
+        throw Object.assign(new Error("Choose an enabled provider or select Automatic."), { statusCode: 400 });
+    }
+    const pinned = provider ? String(provider.id) : null;
+    this.store.run("UPDATE sessions SET pinned=? WHERE id=?", pinned, session);
+    this.store.event("audit", session, { action: "model_selected", pinned });
+    return { pinned, provider: provider?.name ?? null, model: provider?.model ?? null };
+  }
   update(id: string, input: unknown) {
     const existing = this.store.get("SELECT * FROM providers WHERE id=?", id);
     if (!existing) throw Object.assign(new Error("Provider not found"), { statusCode: 404 });
@@ -360,8 +381,7 @@ export class Providers {
     );
     candidates.sort(
       (a, b) =>
-        Number(b.id === pin) -
-        Number(a.id === pin) +
+        (Number(b.id === pin) - Number(a.id === pin)) ||
         (capability
           ? Number(String(b.capabilities).includes(capability)) -
             Number(String(a.capabilities).includes(capability))

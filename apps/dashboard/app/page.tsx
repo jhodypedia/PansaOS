@@ -787,6 +787,7 @@ export default function Dashboard() {
     [schedule, setSchedule] = useState({ cron: "0 9 * * *", prompt: "" });
   const [providerEditing, setProviderEditing] = useState<Row | undefined>();
   const [providerQuery, setProviderQuery] = useState("");
+  const [draftProvider, setDraftProvider] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
   const buffer = useRef("");
   const ticker = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1017,7 +1018,7 @@ export default function Dashboard() {
         }
         if (e.type === "switch")
           notify(`Provider switched: ${payload.reason}`);
-        if (e.type === "task" || e.type === "approval" || e.type === "usage")
+        if (e.type === "task" || e.type === "approval" || e.type === "usage" || (e.type === "audit" && payload.action === "model_selected"))
           void refresh();
       };
       socket.onclose = () => {
@@ -1141,6 +1142,7 @@ export default function Dashboard() {
         })) as Row;
         id = String(created.id);
         setSession(id);
+        if (draftProvider) await api(`sessions/${id}/model`, { provider: draftProvider }, "PUT");
       }
       setStream("");
       await api(`sessions/${id}/message`, { prompt: text });
@@ -1203,15 +1205,15 @@ export default function Dashboard() {
     }
     return out;
   }, [events, session, data, showArchive, sessionState.visible_after]);
-  const activeProvider = useMemo(() => {
-    const pinned = sessions.find((s) => String(s.id) === session)?.pinned;
-    if (pinned) {
-      const p = providers.find((x) => String(x.id) === String(pinned));
-      if (p) return `${String(p.name)} · ${String(p.model)}`;
-    }
-    const first = providers.find((p) => p.enabled);
-    return first ? `${String(first.name)} · ${String(first.model)}` : "—";
-  }, [sessions, session, providers]);
+  const enabledProviders = providers.filter(provider => provider.enabled);
+  const preferredProvider = String((session ? sessions.find(row => row.id === session)?.pinned : draftProvider) ?? "");
+  const changeModel = async (provider: string) => {
+    if (!session) { setDraftProvider(provider); return; }
+    await action(async () => {
+      const { pinned } = await api(`sessions/${session}/model`, { provider: provider || null }, "PUT") as { pinned: string | null };
+      setSessions(rows => rows.map(row => row.id === session ? { ...row, pinned } : row));
+    }, "Model preference saved for the next task");
+  };
   const running = useMemo(() => {
     if (!session) return false;
     const last = events.find(
@@ -2107,9 +2109,6 @@ export default function Dashboard() {
                       <span className="status-dot !w-1 !h-1" />
                       {connected ? "LIVE" : "offline"}
                     </span>
-                    <span className="chat-provider" title="Active provider">
-                      <Layers size={11} /> {activeProvider}
-                    </span>
                     <div className="chat-actions">
                       <button
                         className="icon-btn"
@@ -2159,7 +2158,14 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
-                  <div className="chat-shell">
+                   <label className="chat-model-picker">
+                     <span><Layers size={14} /> Model</span>
+                     <select aria-label="Preferred model for next task" value={enabledProviders.some(provider => provider.id === preferredProvider) ? preferredProvider : ""} disabled={busy || !enabledProviders.length} onChange={event => void changeModel(event.target.value)}>
+                       <option value="">{enabledProviders.length ? "Automatic" : "No enabled providers"}</option>
+                       {enabledProviders.map(provider => <option key={String(provider.id)} value={String(provider.id)}>{String(provider.name)} · {String(provider.model)}</option>)}
+                     </select>
+                   </label>
+                   <div className="chat-shell">
                     {session && view === "console" && <div className="session-work-panel">
                       <button className="btn" onClick={() => void action(() => api(`sessions/${session}/permissions`, undefined, "DELETE"), "Session permissions and auto-approve revoked")}><Shield size={13} /> Revoke session permissions</button>
                       <span>{String((sessionState.usage as Row)?.provider ?? "—")} / {String((sessionState.usage as Row)?.model ?? "—")} · {Number((sessionState.usage as Row)?.tokens ?? 0).toLocaleString()} tokens · {(sessionState.usage as Row)?.cost == null ? "Cost unknown" : `$${Number((sessionState.usage as Row)?.cost).toFixed(4)}`}</span>
